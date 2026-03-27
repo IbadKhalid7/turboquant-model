@@ -129,6 +129,14 @@ The original TurboQuant paper defines **TurboQuant_prod** — a variant that app
 - **4-bit g=128** fits on 8 GB GPUs (5.8 GB peak) with only 2.3 PPL degradation (KLD 0.14)
 - Smaller group sizes (g=128) use much less GPU memory due to smaller rotation matrices
 
+### Qwen3.5-4B
+
+| Config | Total Bits | PPL | Δ PPL | KLD |
+|--------|-----------|-----|-------|-----|
+| Baseline bf16 | 16 | 10.67 | — | — |
+| **4+4 residual g=128** | **8** | **10.70** | **+0.03** | **0.0028** |
+| 4-bit g=128 | 4 | 11.28 | +0.61 | 0.0852 |
+
 ### Triton Fused Kernel
 
 The Triton kernel fuses 4-bit unpack + codebook lookup + matmul + norm rescale in a single kernel launch, avoiding intermediate tensor materialization. Auto-enabled when Triton is available.
