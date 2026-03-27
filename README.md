@@ -76,7 +76,7 @@ turboquant benchmark --model Qwen/Qwen3.5-0.8B-Base --bit-width 4
 3. **Lloyd-Max scalar quantization** per coordinate — optimal for Gaussian distribution
 4. **Pack** indices into 4-bit format (2 per byte)
 
-### On-the-fly Dequantization (Approach C)
+### On-the-fly Dequantization
 
 Instead of inverse-rotating the weight (expensive: N×K matrix), we pre-rotate the input (cheap: B×K vector):
 
