@@ -1,0 +1,36 @@
+[project]
+name = "turboquant-model"
+version = "0.1.0"
+description = "TurboQuant: Near-optimal weight quantization with on-the-fly dequantization"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "torch>=2.0",
+    "numpy",
+    "scipy",
+    "triton>=3.0",
+]
+
+[project.optional-dependencies]
+transformers = [
+    "transformers>=4.40",
+    "accelerate",
+]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
+
+[project.scripts]
+turboquant = "turboquant_model.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/turboquant_model"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
