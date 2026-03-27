@@ -11,6 +11,9 @@ Usage:
     # Evaluate PPL
     turboquant eval --model Qwen/Qwen3.5-0.8B-Base --quantized ./quantized
 
+    # Evaluate PPL + KL divergence vs. reference model
+    turboquant eval --model Qwen/Qwen3.5-0.8B-Base --quantized ./quantized --kld
+
     # Run inference
     turboquant generate --model Qwen/Qwen3.5-0.8B-Base --quantized ./quantized \
         --prompt "The capital of France is"
@@ -65,7 +68,7 @@ def cmd_quantize(args: argparse.Namespace):
 
 
 def cmd_eval(args: argparse.Namespace):
-    """Evaluate PPL on WikiText-103."""
+    """Evaluate PPL (and optionally KL divergence) on WikiText-103."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from datasets import load_dataset
 
@@ -88,6 +91,14 @@ def cmd_eval(args: argparse.Namespace):
         )
         model = quantize_model(model, config)
 
+    # Load reference model for KLD computation
+    ref_model = None
+    if args.kld:
+        logger.info(f"Loading reference model for KLD: {args.model}")
+        ref_model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=torch.bfloat16, trust_remote_code=True
+        ).cuda().eval()
+
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
     # Load WikiText-103 validation
@@ -101,6 +112,7 @@ def cmd_eval(args: argparse.Namespace):
 
     total_loss = 0.0
     total_tokens = 0
+    total_kld = 0.0
 
     model.eval()
     with torch.no_grad():
@@ -118,9 +130,26 @@ def cmd_eval(args: argparse.Namespace):
             total_loss += loss.item()
             total_tokens += targets.numel()
 
+            if ref_model is not None:
+                ref_logits = ref_model(chunk[:, :-1]).logits
+                log_p = torch.nn.functional.log_softmax(logits, dim=-1)
+                log_q = torch.nn.functional.log_softmax(ref_logits, dim=-1)
+                kld = torch.nn.functional.kl_div(
+                    log_p.reshape(-1, logits.shape[-1]),
+                    log_q.reshape(-1, logits.shape[-1]),
+                    log_target=True,
+                    reduction="sum",
+                )
+                total_kld += kld.item()
+
     ppl = torch.exp(torch.tensor(total_loss / total_tokens)).item()
     logger.info(f"PPL ({n_chunks} chunks, seq_len={seq_len}): {ppl:.4f}")
     print(f"PPL: {ppl:.4f}")
+
+    if ref_model is not None:
+        avg_kld = total_kld / total_tokens
+        logger.info(f"KLD ({n_chunks} chunks, seq_len={seq_len}): {avg_kld:.6f}")
+        print(f"KLD: {avg_kld:.6f}")
 
 
 def cmd_generate(args: argparse.Namespace):
@@ -234,6 +263,7 @@ def main():
     p_eval.add_argument("--residual-seed", type=int, default=1042)
     p_eval.add_argument("--seq-length", type=int, default=512)
     p_eval.add_argument("--n-chunks", type=int, default=50)
+    p_eval.add_argument("--kld", action="store_true", help="Compute KL divergence vs. reference model")
 
     # --- generate ---
     p_gen = subparsers.add_parser("generate", help="Generate text")

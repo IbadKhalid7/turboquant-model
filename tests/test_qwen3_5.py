@@ -6,25 +6,46 @@ Tests:
   3. Save / load round-trip
   4. Residual quantization (4+4 bit)
   5. Generation sanity check
+  6. Eval command (PPL + KLD)
+
+A JSON report is written to ``tests/report_qwen3_5.json`` after the run.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 import torch
 
 MODEL_ID = "Qwen/Qwen3.5-4B"
+REPORT_PATH = Path(__file__).with_name("report_qwen3_5.json")
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def report():
+    """Accumulate test results and write a JSON report at teardown."""
+    data: dict = {
+        "model": MODEL_ID,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "sections": {},
+    }
+    yield data
+    # Write report after all module tests finish
+    REPORT_PATH.write_text(json.dumps(data, indent=2))
+    logger.info(f"Report written to {REPORT_PATH}")
+
 
 @pytest.fixture(scope="module")
 def base_model():
@@ -68,7 +89,7 @@ class TestArchitectureCompat:
         """Model loads on GPU without errors."""
         assert base_model is not None
 
-    def test_has_linear_layers(self, base_model):
+    def test_has_linear_layers(self, base_model, report):
         """Model contains nn.Linear layers that can be quantized."""
         linears = [
             (n, m) for n, m in base_model.named_modules()
@@ -76,13 +97,15 @@ class TestArchitectureCompat:
         ]
         assert len(linears) > 0, "No nn.Linear layers found"
         logger.info(f"Found {len(linears)} nn.Linear layers")
+        report["sections"].setdefault("architecture", {})["n_linear_layers"] = len(linears)
 
-    def test_base_model_forward(self, base_logits, sample_input):
+    def test_base_model_forward(self, base_logits, sample_input, report):
         """Base model produces correct-shape logits."""
         B, S = sample_input.shape
         assert base_logits.shape[0] == B
         assert base_logits.shape[1] == S
         assert base_logits.shape[2] > 0  # vocab_size
+        report["sections"].setdefault("architecture", {})["vocab_size"] = base_logits.shape[2]
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +150,7 @@ class TestSinglePassQuantization:
         assert not torch.isnan(logits).any(), "NaN in logits"
         assert not torch.isinf(logits).any(), "Inf in logits"
 
-    def test_compression_ratio(self, quantized_model):
+    def test_compression_ratio(self, quantized_model, report):
         """Quantized model achieves meaningful compression."""
         from turboquant_model.module import TurboQuantLinear
         total_orig = 0
@@ -143,8 +166,13 @@ class TestSinglePassQuantization:
             f"{total_compressed / 1024**2:.1f}MB ({ratio:.1f}x)"
         )
         assert ratio > 2.0, f"Expected >2x compression, got {ratio:.1f}x"
+        report["sections"].setdefault("single_pass_4bit", {})["compression"] = {
+            "original_mb": round(total_orig / 1024**2, 1),
+            "compressed_mb": round(total_compressed / 1024**2, 1),
+            "ratio": round(ratio, 2),
+        }
 
-    def test_top1_agreement(self, quantized_model, base_logits, sample_input):
+    def test_top1_agreement(self, quantized_model, base_logits, sample_input, report):
         """Quantized model's top-1 predictions should partially agree with base."""
         with torch.no_grad():
             q_logits = quantized_model(sample_input).logits
@@ -154,6 +182,7 @@ class TestSinglePassQuantization:
         logger.info(f"Top-1 agreement with base: {agreement:.2%}")
         # Relaxed threshold — 4-bit quant may diverge on some tokens
         assert agreement >= 0.0, "Agreement calculation failed"
+        report["sections"].setdefault("single_pass_4bit", {})["top1_agreement"] = round(agreement, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +289,66 @@ class TestGeneration:
         logger.info(f"Generated ({n_new} tokens): {text!r}")
         assert n_new > 0, "No tokens generated"
         assert len(text) > len("Hello, my name is"), "Generated text too short"
+
+
+# ---------------------------------------------------------------------------
+# 6. Eval command (PPL + KLD)
+# ---------------------------------------------------------------------------
+
+class TestEval:
+    """Test the cmd_eval function behind `turboquant eval`."""
+
+    def test_eval_ppl_only(self, base_model, capsys, report):
+        """cmd_eval computes PPL without --kld."""
+        import argparse
+        from turboquant_model.cli import cmd_eval
+
+        args = argparse.Namespace(
+            model=MODEL_ID,
+            quantized=None,
+            bit_width=4,
+            group_size=128,
+            seed=42,
+            residual_bit_width=None,
+            residual_seed=1042,
+            seq_length=128,
+            n_chunks=2,
+            kld=False,
+        )
+        cmd_eval(args)
+
+        captured = capsys.readouterr()
+        assert "PPL:" in captured.out
+        assert "KLD:" not in captured.out
+        # PPL should be a finite positive number
+        ppl = float(captured.out.split("PPL:")[1].strip())
+        assert ppl > 0 and ppl < 1e6, f"Unreasonable PPL: {ppl}"
+        report["sections"].setdefault("eval", {})["ppl"] = round(ppl, 4)
+
+    def test_eval_ppl_and_kld(self, base_model, capsys, report):
+        """cmd_eval computes both PPL and KLD with --kld."""
+        import argparse
+        from turboquant_model.cli import cmd_eval
+
+        args = argparse.Namespace(
+            model=MODEL_ID,
+            quantized=None,
+            bit_width=4,
+            group_size=128,
+            seed=42,
+            residual_bit_width=None,
+            residual_seed=1042,
+            seq_length=128,
+            n_chunks=2,
+            kld=True,
+        )
+        cmd_eval(args)
+
+        captured = capsys.readouterr()
+        assert "PPL:" in captured.out
+        assert "KLD:" in captured.out
+        ppl = float(captured.out.split("PPL:")[1].split("\n")[0].strip())
+        kld = float(captured.out.split("KLD:")[1].strip())
+        assert ppl > 0 and ppl < 1e6, f"Unreasonable PPL: {ppl}"
+        assert kld >= 0, f"KLD should be non-negative, got {kld}"
+        report["sections"].setdefault("eval", {})["kld"] = round(kld, 6)

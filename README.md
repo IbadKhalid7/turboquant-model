@@ -114,19 +114,19 @@ The original TurboQuant paper defines **TurboQuant_prod** — a variant that app
 
 ## Benchmark Results (Qwen3.5-0.8B-Base, WikiText-103 val, 50 chunks)
 
-| Config | Total Bits | Codebook | PPL | Δ PPL | Compressed Size | Peak GPU |
-|--------|-----------|----------|-----|-------|-----------------|----------|
-| Baseline bf16 | 16 | — | 14.29 | — | 1,504 MB | — |
-| **4+4 residual g=128** | **8** | **16+16 (128 B)** | **14.29** | **0.00** | **762 MB** | 9.7 GB |
-| 3+2 residual g=128 | 5 | 8+4 (48 B) | 15.16 | +0.87 | 762 MB | 9.7 GB |
-| 4-bit g=full | 4 | 16 (64 B) | 16.23 | +1.94 | 361 MB | 9.6 GB |
-| 4-bit g=128 | 4 | 16 (64 B) | 16.57 | +2.28 | 381 MB | 5.8 GB |
+| Config | Total Bits | Codebook | PPL | Δ PPL | KLD | Compressed Size | Peak GPU |
+|--------|-----------|----------|-----|-------|-----|-----------------|----------|
+| Baseline bf16 | 16 | — | 14.29 | — | — | 1,504 MB | — |
+| **4+4 residual g=128** | **8** | **16+16 (128 B)** | **14.28** | **−0.01** | **0.0020** | **762 MB** | 9.7 GB |
+| 3+2 residual g=128 | 5 | 8+4 (48 B) | 15.15 | +0.86 | 0.0545 | 762 MB | 9.7 GB |
+| 4-bit g=full | 4 | 16 (64 B) | 16.22 | +1.93 | 0.1363 | 361 MB | 9.6 GB |
+| 4-bit g=128 | 4 | 16 (64 B) | 16.58 | +2.29 | 0.1403 | 381 MB | 5.8 GB |
 
 **Codebook** = Lloyd-Max optimal centroids for N(0,1). Size = 2^b × 4 bytes (float32). Shared globally across all layers — negligible overhead.
 
 **Key findings:**
-- **4+4 residual is lossless** — PPL 14.29 = baseline 14.29
-- **4-bit g=128** fits on 8 GB GPUs (5.8 GB peak) with only 2.3 PPL degradation
+- **4+4 residual is near-lossless** — PPL 14.28 ≈ baseline 14.29, KLD only 0.002 nats
+- **4-bit g=128** fits on 8 GB GPUs (5.8 GB peak) with only 2.3 PPL degradation (KLD 0.14)
 - Smaller group sizes (g=128) use much less GPU memory due to smaller rotation matrices
 
 ### Triton Fused Kernel
