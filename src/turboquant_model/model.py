@@ -20,7 +20,6 @@ from turboquant_model.codebook import get_codebook
 from turboquant_model.rotation import generate_rotation_matrix
 from turboquant_model.quantize import pack_4bit
 from turboquant_model.module import TurboQuantLinear
-from turboquant_model.sensitivity import select_group_size
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +36,6 @@ class TurboQuantConfig:
     # Residual
     residual_bit_width: Optional[int] = None
     residual_seed: int = 1042
-    # Per-layer adaptive group size
-    # Maps layer name → group_size (None = full row).
-    # Populated automatically by quantize_model when target_snr is set, or
-    # can be provided manually for explicit per-layer control.
-    per_layer_group_size: dict[str, Optional[int]] = field(default_factory=dict)
-    # Target SNR (dB) for adaptive group size selection.  When set,
-    # quantize_model runs a sensitivity sweep per layer to find the largest
-    # group_size that meets this threshold.
-    target_snr: Optional[float] = None
 
     def save(self, path: str | Path):
         with open(path, "w") as f:
@@ -104,27 +94,7 @@ def quantize_model(model: nn.Module, config: TurboQuantConfig) -> nn.Module:
         M, N = W.shape
         device = W.device
 
-        # Determine group_size for this layer:
-        #   1. Explicit per-layer override takes highest priority.
-        #   2. If target_snr is set, run a sensitivity sweep.
-        #   3. Fall back to the global config.group_size.
-        if name in config.per_layer_group_size:
-            layer_group_size = config.per_layer_group_size[name]
-        elif config.target_snr is not None:
-            logger.info("Sensitivity sweep for %s …", name)
-            layer_group_size = select_group_size(
-                W,
-                bit_width=config.bit_width,
-                seed=config.seed,
-                target_snr=config.target_snr,
-            )
-            logger.info("  → group_size=%s (target SNR=%.1f dB)", layer_group_size, config.target_snr)
-            # Record selection so it is persisted with the config.
-            config.per_layer_group_size[name] = layer_group_size
-        else:
-            layer_group_size = config.group_size
-
-        group_size = layer_group_size or N
+        group_size = config.group_size or N
 
         # --- Pass 1: Quantize weight ---
         pass1_packed, pass1_norms, pass1_codebook = _quantize_weight(
@@ -354,10 +324,7 @@ def load_quantized(
             continue
 
         M, N = module.weight.shape
-        # Use the per-layer group size if available, otherwise fall back to
-        # the global config value.
-        layer_group_size = config.per_layer_group_size.get(name, config.group_size)
-        group_size = layer_group_size or N
+        group_size = config.group_size or N
 
         tq = TurboQuantLinear(
             in_features=N,

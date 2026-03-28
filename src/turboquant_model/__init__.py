@@ -29,12 +29,6 @@ from turboquant_model.model import (
     save_quantized,
     load_quantized,
 )
-from turboquant_model.sensitivity import (
-    compute_layer_snr,
-    compute_layer_mse,
-    select_group_size,
-    DEFAULT_CANDIDATE_SIZES,
-)
 
 __version__ = "0.1.0"
 
@@ -58,9 +52,4 @@ __all__ = [
     "quantize_model",
     "save_quantized",
     "load_quantized",
-    # Sensitivity
-    "compute_layer_snr",
-    "compute_layer_mse",
-    "select_group_size",
-    "DEFAULT_CANDIDATE_SIZES",
 ]
