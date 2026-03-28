@@ -50,6 +50,7 @@ def cmd_quantize(args: argparse.Namespace):
         skip_lm_head=args.skip_lm_head,
         residual_bit_width=args.residual_bit_width,
         residual_seed=args.residual_seed,
+        target_snr=args.target_snr,
     )
 
     logger.info(f"Quantizing: {config.bit_width}-bit"
@@ -251,6 +252,18 @@ def main():
     p_quant.add_argument("--skip-lm-head", action="store_true")
     p_quant.add_argument("--residual-bit-width", type=int, default=None, help="Bits for residual pass")
     p_quant.add_argument("--residual-seed", type=int, default=1042)
+    p_quant.add_argument(
+        "--target-snr",
+        type=float,
+        default=None,
+        metavar="DB",
+        help=(
+            "Enable adaptive per-layer group size selection. "
+            "For each layer, picks the largest group_size (fewest norms) "
+            "whose quantization SNR meets this threshold (in dB). "
+            "Typical values: 20–40 dB."
+        ),
+    )
 
     # --- eval ---
     p_eval = subparsers.add_parser("eval", help="Evaluate PPL on WikiText-103")
