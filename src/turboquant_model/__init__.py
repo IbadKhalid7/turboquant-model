@@ -21,7 +21,14 @@ from turboquant_model.quantize import (
     turboquant_quantize,
     turboquant_quantize_packed,
 )
-from turboquant_model.residual import residual_quantize, residual_quantize_packed
+from turboquant_model.residual import (
+    residual_quantize,
+    residual_quantize_packed,
+    multi_residual_quantize,
+    multi_residual_quantize_packed,
+    merge_residual_passes,
+    merge_and_requantize,
+)
 from turboquant_model.module import TurboQuantLinear
 from turboquant_model.model import (
     TurboQuantConfig,
@@ -45,6 +52,10 @@ __all__ = [
     # Residual
     "residual_quantize",
     "residual_quantize_packed",
+    "multi_residual_quantize",
+    "multi_residual_quantize_packed",
+    "merge_residual_passes",
+    "merge_and_requantize",
     # Module
     "TurboQuantLinear",
     # Model

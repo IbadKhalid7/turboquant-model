@@ -22,7 +22,8 @@ from turboquant_model.rotation import (
     hadamard_rotate,
     hadamard_rotate_inverse,
 )
-from turboquant_model.quantize import unpack_4bit
+from turboquant_model.quantize import unpack_4bit, pack_4bit
+from turboquant_model.codebook import get_codebook
 
 # Try to import fused kernels — prefers cuTile > Triton > PyTorch fallback
 _HAS_CUTILE = False
@@ -340,6 +341,137 @@ class TurboQuantLinear(nn.Module):
                 W[:, g_start:g_end] += W_g
 
         return W.to(torch.bfloat16)
+
+    @torch.no_grad()
+    def merge_passes(self) -> None:
+        """Merge residual pass into the primary pass via rotated-domain addition.
+
+        When both passes share the **same rotation seed**, the rotation matrix
+        factors out of the sum and the merge happens entirely in the rotated
+        domain — no inverse rotation is ever computed.  The merged rotated-domain
+        values are re-normalised and re-quantised into a single set of packed
+        4-bit indices.
+
+        After calling this method ``has_residual`` becomes False and forward
+        uses a single pass, cutting inference cost in half while retaining
+        multi-pass quality (up to re-quantisation).
+
+        When the rotation seeds differ, a dense dequantize-sum-requantize
+        fallback is used (still correct, but involves inverse rotations).
+        """
+        if not self.has_residual:
+            return
+
+        device = self.indices_packed.device
+        K = self.in_features
+        N = self.out_features
+        scale = self._scale
+
+        centroids, boundaries = get_codebook(self.bit_width)
+        centroids = centroids.to(device)
+        boundaries = boundaries.to(device)
+
+        same_rotation = self._pass2_seed == self._rotation_seed
+
+        if same_rotation:
+            # ---- Fast path: merge in the rotated domain ----
+            indices1 = self._get_indices()
+            indices2 = self._get_pass2_indices()
+
+            all_merged_indices: list[torch.Tensor] = []
+            all_merged_norms: list[torch.Tensor] = []
+
+            for g in range(self._n_groups):
+                g_start = g * self.group_size
+                g_end = min(g_start + self.group_size, K)
+                g_dim = g_end - g_start
+
+                # Pass-1 contribution in rotated domain
+                Y1 = self.codebook[indices1[:, g_start:g_end].long()] / scale
+                n1 = (
+                    self.weight_norms
+                    if self.weight_norms.dim() == 1
+                    else self.weight_norms[:, g]
+                )
+                Y1 = Y1 * n1.unsqueeze(1)
+
+                # Pass-2 contribution in rotated domain
+                Y2 = self.pass2_codebook[indices2[:, g_start:g_end].long()] / scale
+                n2 = (
+                    self.pass2_weight_norms
+                    if self.pass2_weight_norms.dim() == 1
+                    else self.pass2_weight_norms[:, g]
+                )
+                Y2 = Y2 * n2.unsqueeze(1)
+
+                Y_merged = Y1 + Y2
+
+                # Re-normalise
+                merged_norms = Y_merged.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                Y_norm = Y_merged / merged_norms
+
+                # Re-quantise (already rotated — no Pi needed)
+                Y_scaled = Y_norm * scale
+                idx = torch.searchsorted(boundaries, Y_scaled.reshape(-1))
+                idx = idx.clamp(0, len(centroids) - 1).reshape(N, g_dim)
+
+                all_merged_indices.append(idx)
+                all_merged_norms.append(merged_norms.squeeze(1))
+
+            full_indices = torch.cat(all_merged_indices, dim=1)
+            norms_out = (
+                torch.stack(all_merged_norms, dim=1)
+                if len(all_merged_norms) > 1
+                else all_merged_norms[0]
+            )
+        else:
+            # ---- Fallback: dequantize both, sum, re-quantize ----
+            W_merged = self.dequantize().float()
+            all_indices: list[torch.Tensor] = []
+            all_norms: list[torch.Tensor] = []
+
+            for g_start in range(0, K, self.group_size):
+                g_end = min(g_start + self.group_size, K)
+                g_dim = g_end - g_start
+                W_g = W_merged[:, g_start:g_end]
+
+                norms = W_g.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                W_norm = W_g / norms
+                all_norms.append(norms.squeeze(1))
+
+                Pi = generate_rotation_matrix(
+                    g_dim, seed=self._rotation_seed + g_start
+                ).to(device)
+                Y = W_norm @ Pi.T
+                Y_scaled = Y * scale
+
+                idx = torch.searchsorted(boundaries, Y_scaled.reshape(-1))
+                idx = idx.clamp(0, len(centroids) - 1).reshape(N, g_dim)
+                all_indices.append(idx)
+
+            full_indices = torch.cat(all_indices, dim=1)
+            norms_out = (
+                torch.stack(all_norms, dim=1)
+                if len(all_norms) > 1
+                else all_norms[0]
+            )
+
+        # Pack and replace buffers
+        if K % 2 != 0:
+            full_indices = torch.nn.functional.pad(full_indices, (0, 1), value=0)
+
+        packed = pack_4bit(full_indices)
+        self.indices_packed.copy_(packed)
+        self.weight_norms.copy_(norms_out)
+        self.codebook.copy_(centroids)
+
+        # Clear residual buffers
+        self.register_buffer("pass2_indices_packed", None)
+        self.register_buffer("pass2_weight_norms", None)
+        self.register_buffer("pass2_codebook", None)
+        self._pass2_seed = None
+        self._cached_indices = None
+        self._cached_pass2_indices = None
 
     def memory_bytes(self) -> int:
         """Compressed storage in bytes."""
