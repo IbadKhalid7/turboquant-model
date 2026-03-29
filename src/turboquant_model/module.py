@@ -349,7 +349,7 @@ class TurboQuantLinear(nn.Module):
         When both passes share the **same rotation seed**, the rotation matrix
         factors out of the sum and the merge happens entirely in the rotated
         domain — no inverse rotation is ever computed.  The merged rotated-domain
-        values are re-normalised and re-quantised into a single set of packed
+        values are re-normalized and re-quantized into a single set of packed
         4-bit indices.
 
         After calling this method ``has_residual`` becomes False and forward
@@ -406,11 +406,11 @@ class TurboQuantLinear(nn.Module):
 
                 Y_merged = Y1 + Y2
 
-                # Re-normalise
+                # Re-normalize
                 merged_norms = Y_merged.norm(dim=1, keepdim=True).clamp(min=1e-8)
                 Y_norm = Y_merged / merged_norms
 
-                # Re-quantise (already rotated — no Pi needed)
+                # Re-quantize (already rotated — no Pi needed)
                 Y_scaled = Y_norm * scale
                 idx = torch.searchsorted(boundaries, Y_scaled.reshape(-1))
                 idx = idx.clamp(0, len(centroids) - 1).reshape(N, g_dim)

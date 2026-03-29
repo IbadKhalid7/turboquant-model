@@ -105,14 +105,14 @@ class TestMultiPassPacked:
 # ---------------------------------------------------------------------------
 
 class TestMergeResidualPasses:
-    """merge_residual_passes is exact w.r.t. the sum of dequantised passes."""
+    """merge_residual_passes is exact w.r.t. the sum of dequantized passes."""
 
     def test_merge_equals_sum_of_dequantized(self, weight_matrix):
         W = weight_matrix
         packed = multi_residual_quantize_packed(W, n_passes=3, bit_width=4, seed=42)
         W_merged = merge_residual_passes(packed)
 
-        # Manually sum dequantised passes
+        # Manually sum dequantized passes
         W_sum = torch.zeros_like(W_merged)
         for p in packed["passes"]:
             W_sum += _dequantize_from_packed(p, device=torch.device("cpu"))
@@ -147,7 +147,7 @@ class TestMergeAndRequantize:
         assert merged["bit_width"] == 4
 
     def test_dequant_roundtrip(self, weight_matrix):
-        """Merged+requantised representation should dequantise cleanly."""
+        """Merged+requantized representation should dequantize cleanly."""
         packed = multi_residual_quantize_packed(weight_matrix, n_passes=3, bit_width=4, seed=42)
         merged = merge_and_requantize(packed, target_bit_width=4)
         W_deq = _dequantize_from_packed(merged, device=torch.device("cpu"))

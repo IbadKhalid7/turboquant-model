@@ -16,7 +16,7 @@ factors out of the sum of passes.  For each group g:
   Ŵ_total[:, g] = Σ_k diag(α_k) · C_k[i_k] / √d · Π_g
                  = [Σ_k diag(α_k) · C_k[i_k] / √d] · Π_g
 
-The quantity  Ỹ[:, g] = Σ_k α_k · C_k[i_k] / √d  is the **merged
+The quantity Ỹ[:, g] = Σ_k α_k · C_k[i_k] / √d  is the **merged
 rotated-domain matrix**.  This enables:
   1. Applying residual quantization an arbitrary number of times.
   2. Merging all passes into a single dense weight matrix (exact, lossless).
@@ -314,7 +314,7 @@ def merge_and_requantize(
 
     1. Sums the scaled codebook values across all passes **in the rotated
        domain** — no inverse rotation is ever computed.
-    2. Re-normalises and re-quantises the merged representation directly.
+    2. Re-normalizes and re-quantizes the merged representation directly.
     3. Returns a single-pass packed representation.
 
     The result encapsulates multi-pass quality with single-pass inference cost
@@ -372,11 +372,11 @@ def merge_and_requantize(
 
             Y_merged += Y_g
 
-        # Re-normalise the merged rotated-domain matrix
+        # Re-normalize the merged rotated-domain matrix
         merged_norms = Y_merged.norm(dim=1, keepdim=True).clamp(min=1e-8)
         Y_normalized = Y_merged / merged_norms
 
-        # Re-quantise directly (already in the rotated domain — no rotation
+        # Re-quantize directly (already in the rotated domain — no rotation
         # needed, which is the whole efficiency win)
         Y_scaled = Y_normalized * scale
         idx = torch.searchsorted(boundaries, Y_scaled.reshape(-1))
