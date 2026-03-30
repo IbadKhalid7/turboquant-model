@@ -43,6 +43,11 @@ class TurboQuantConfig:
     residual_seed: int = 1042
     # Rotation method: "qr" (Haar random orthogonal) or "hadamard" (fast Walsh-Hadamard + signs)
     rotation: str = "qr"
+    # Rotation strategy for residual passes:
+    #   "different" — pass 1 uses seed, pass 2 uses residual_seed (default, best quality)
+    #   "shared"    — both passes use the same seed (enables merge_and_requantize)
+    #   "alternating" — even passes use seed, odd passes use residual_seed (for multi-pass)
+    rotation_strategy: str = "different"
 
     def save(self, path: str | Path):
         with open(path, "w") as f:
@@ -133,16 +138,22 @@ def quantize_model(model: nn.Module, config: TurboQuantConfig) -> nn.Module:
             W_hat1 = tq.dequantize().float()
             residual = W.float() - W_hat1
 
+            # Determine residual rotation seed based on strategy
+            if config.rotation_strategy == "shared":
+                pass2_seed = config.seed
+            else:  # "different" or "alternating" — both use residual_seed for pass 2
+                pass2_seed = config.residual_seed
+
             pass2_packed, pass2_norms, pass2_codebook = _quantize_weight(
                 residual, config.residual_bit_width, group_size,
-                config.residual_seed, r_centroids, r_boundaries, device,
+                pass2_seed, r_centroids, r_boundaries, device,
                 rotation=config.rotation,
             )
             tq.set_pass2(
                 indices_packed=pass2_packed,
                 weight_norms=pass2_norms,
                 codebook=r_centroids.to(device),
-                seed=config.residual_seed,
+                seed=pass2_seed,
             )
 
         # Replace in model

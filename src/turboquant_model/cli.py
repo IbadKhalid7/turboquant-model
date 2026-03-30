@@ -51,6 +51,7 @@ def cmd_quantize(args: argparse.Namespace):
         residual_bit_width=args.residual_bit_width,
         residual_seed=args.residual_seed,
         rotation=args.rotation,
+        rotation_strategy=args.rotation_strategy,
     )
 
     logger.info(f"Quantizing: {config.bit_width}-bit"
@@ -90,6 +91,7 @@ def cmd_eval(args: argparse.Namespace):
             residual_bit_width=args.residual_bit_width,
             residual_seed=args.residual_seed,
             rotation=args.rotation,
+            rotation_strategy=getattr(args, "rotation_strategy", "different"),
         )
         model = quantize_model(model, config)
 
@@ -255,6 +257,10 @@ def main():
     p_quant.add_argument("--residual-seed", type=int, default=1042)
     p_quant.add_argument("--rotation", choices=["qr", "hadamard"], default="qr",
                          help="Rotation method: qr (Haar random) or hadamard (fast Walsh-Hadamard)")
+    p_quant.add_argument("--rotation-strategy", choices=["different", "shared", "alternating"],
+                         default="different",
+                         help="Rotation strategy for residual: different (default, best quality), "
+                              "shared (enables merge_and_requantize), alternating (for multi-pass)")
 
     # --- eval ---
     p_eval = subparsers.add_parser("eval", help="Evaluate PPL on WikiText-103")
@@ -270,6 +276,9 @@ def main():
     p_eval.add_argument("--kld", action="store_true", help="Compute KL divergence vs. reference model")
     p_eval.add_argument("--rotation", choices=["qr", "hadamard"], default="qr",
                         help="Rotation method: qr or hadamard")
+    p_eval.add_argument("--rotation-strategy", choices=["different", "shared", "alternating"],
+                        default="different",
+                        help="Rotation strategy for residual passes")
 
     # --- generate ---
     p_gen = subparsers.add_parser("generate", help="Generate text")

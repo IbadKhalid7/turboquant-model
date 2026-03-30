@@ -88,6 +88,28 @@ store: packed (uint8), norms (float32), codebook (float32), seed (int)
 
 Single-pass 4-bit quantization introduces noticeable error. Residual quantization dramatically reduces this by running multiple passes, each quantizing the error left by the previous pass.
 
+### Rotation Strategies
+
+The choice of rotation seed across passes affects both quality and whether the fast merge optimization is available:
+
+| Strategy | Seeds | Merge? | Quality | Use Case |
+|----------|-------|--------|---------|----------|
+| **different** (default) | Unique seed per pass | ❌ | Best | Max quality, no merge needed |
+| **shared** | Same seed all passes | ✅ | Lowest | When merge to single-pass is required |
+| **alternating** | Two seeds, alternating | ❌ | Near-best | Balance of diversity and simplicity |
+
+With **different** rotations, each pass projects the residual into an independent random basis, so quantization errors are uncorrelated across passes. **Shared** rotation reuses the same basis, which makes errors correlated but enables the fast-path merge (see Merging below). **Alternating** uses two seeds cycling $s_a, s_b, s_a, s_b, \ldots$ — nearly as good as independent seeds while requiring only two rotation matrices.
+
+Benchmark results on Qwen3.5-0.8B (4 × 2-bit):
+
+| Strategy | PPL | KLD |
+|----------|-----|-----|
+| different | 17.87 | 0.0034 |
+| alternating | 18.09 | 0.0041 |
+| shared | 22.24 | 0.0498 |
+
+The `--rotation-strategy` CLI flag selects the strategy; default is `different`.
+
 ### Two-Pass Pipeline
 
 ```
@@ -99,11 +121,15 @@ Pass 2:  R_hat  = TQ(R,          bit_width=b₂, seed=s₂)
 
 Total storage is $b_1 + b_2$ bits per weight. A **4+4 residual** (8 total bits) achieves near-lossless quality: PPL 14.28 vs baseline 14.29 on Qwen3.5-0.8B, KLD only 0.002 nats.
 
+When `rotation_strategy="shared"`, $s_1 = s_2$ (same seed for both passes), enabling the merge optimization. With `"different"` (default), $s_1 \neq s_2$ for maximum quality.
+
 **Implementation:** `residual.py → residual_quantize_packed()`
 
-### N-Pass Pipeline (Shared Rotation)
+### N-Pass Pipeline
 
-For more than two passes, a shared rotation seed enables an important optimization (see Merging below):
+For more than two passes, three rotation strategies are available:
+
+**Shared rotation** — a single seed enables the fast merge optimization:
 
 ```
 for k in 1..n_passes:
@@ -112,9 +138,19 @@ for k in 1..n_passes:
     W_approx += W_hat_k
 ```
 
+**Alternating rotation** — two seeds cycle for better diversity:
+
+```
+for k in 1..n_passes:
+    seed_k = s_a if k is odd else s_b              # alternate between two seeds
+    W_hat_k = TQ(R_{k-1}, bit_width=b, seed=seed_k)
+    R_k = R_{k-1} - W_hat_k
+    W_approx += W_hat_k
+```
+
 MSE decreases monotonically with each additional pass.
 
-**Implementation:** `residual.py → multi_residual_quantize_packed()`
+**Implementation:** `residual.py → multi_residual_quantize_packed()` (shared), `residual.py → alternating_residual_quantize_packed()` (alternating)
 
 ## Merging Multi-Pass to Single-Pass
 
@@ -137,6 +173,8 @@ for each group g:
 ```
 
 **Result:** A single packed representation with the same format as single-pass, but approximating the multi-pass quality.
+
+> **Note:** `merge_and_requantize` requires all passes to share the same rotation seed (`rotation_strategy="shared"`). With `"different"` or `"alternating"` strategies, passes cannot be merged in the rotated domain because the rotation matrices differ.
 
 **Implementation:** `residual.py → merge_and_requantize()`
 
@@ -199,4 +237,12 @@ turboquant quantize --model Qwen/Qwen3.5-0.8B-Base --output ./quantized \
 # With Hadamard rotation (faster for power-of-2 dimensions)
 turboquant quantize --model Qwen/Qwen3.5-0.8B-Base --output ./quantized \
     --bit-width 4 --rotation hadamard
+
+# Shared rotation (enables merge optimization)
+turboquant quantize --model Qwen/Qwen3.5-0.8B-Base --output ./quantized \
+    --bit-width 4 --residual-bit-width 4 --rotation-strategy shared
+
+# Alternating rotation (best quality/diversity trade-off for multi-pass)
+turboquant quantize --model Qwen/Qwen3.5-0.8B-Base --output ./quantized \
+    --bit-width 4 --residual-bit-width 4 --rotation-strategy alternating
 ```
