@@ -26,6 +26,8 @@ from turboquant_model.residual import (
     residual_quantize_packed,
     multi_residual_quantize,
     multi_residual_quantize_packed,
+    alternating_residual_quantize,
+    alternating_residual_quantize_packed,
     merge_residual_passes,
     merge_and_requantize,
 )
@@ -54,6 +56,8 @@ __all__ = [
     "residual_quantize_packed",
     "multi_residual_quantize",
     "multi_residual_quantize_packed",
+    "alternating_residual_quantize",
+    "alternating_residual_quantize_packed",
     "merge_residual_passes",
     "merge_and_requantize",
     # Module

@@ -265,6 +265,105 @@ def multi_residual_quantize_packed(
     }
 
 
+# ---------------------------------------------------------------------------
+# Alternating two-rotation multi-pass residual
+# ---------------------------------------------------------------------------
+
+
+@torch.no_grad()
+def alternating_residual_quantize(
+    W: torch.Tensor,
+    n_passes: int = 3,
+    bit_width: int = 4,
+    group_size: Optional[int] = None,
+    seed_a: int = 42,
+    seed_b: int = 1042,
+) -> torch.Tensor:
+    """N-pass residual TurboQuant with two alternating rotations.
+
+    Pass 0 uses seed_a, pass 1 uses seed_b, pass 2 uses seed_a, etc.
+    Different rotations may decorrelate residual error differently,
+    potentially capturing more information per pass than a single rotation.
+
+    Trade-off vs shared rotation: inference requires 2 pre-rotated inputs
+    instead of 1, and merge_and_requantize cannot be used (different rotation
+    domains). However, merge_residual_passes (exact dense merge) still works.
+
+    Args:
+        W: (M, N) weight matrix
+        n_passes: number of residual passes (≥ 1)
+        bit_width: bits per pass
+        group_size: group size (None = full row)
+        seed_a: rotation seed for even passes (0, 2, 4, …)
+        seed_b: rotation seed for odd passes (1, 3, 5, …)
+
+    Returns:
+        W_approx: same shape/dtype as W
+    """
+    current = W.float()
+    W_approx = torch.zeros_like(current)
+
+    for i in range(n_passes):
+        seed = seed_a if i % 2 == 0 else seed_b
+        W_hat = turboquant_quantize(
+            current, bit_width=bit_width, group_size=group_size, seed=seed,
+        )
+        W_approx += W_hat.float()
+        current = current - W_hat.float()
+
+    return W_approx.to(W.dtype)
+
+
+@torch.no_grad()
+def alternating_residual_quantize_packed(
+    W: torch.Tensor,
+    n_passes: int = 3,
+    bit_width: int = 4,
+    group_size: Optional[int] = None,
+    seed_a: int = 42,
+    seed_b: int = 1042,
+) -> dict:
+    """N-pass residual TurboQuant with two alternating rotations: packed output.
+
+    Args:
+        W: (M, N) weight matrix
+        n_passes: number of residual passes (≥ 1)
+        bit_width: bits per pass
+        group_size: group size (None = full row)
+        seed_a: rotation seed for even passes
+        seed_b: rotation seed for odd passes
+
+    Returns:
+        dict with:
+            passes: list[dict] — one per pass
+            n_passes: int
+            total_bits: bit_width × n_passes
+            seeds: (seed_a, seed_b)
+    """
+    M, N = W.shape
+    if group_size is None:
+        group_size = N
+
+    passes: list[dict] = []
+    current = W.float()
+
+    for i in range(n_passes):
+        seed = seed_a if i % 2 == 0 else seed_b
+        packed = turboquant_quantize_packed(
+            current, bit_width=bit_width, group_size=group_size, seed=seed,
+        )
+        passes.append(packed)
+        W_hat = _dequantize_from_packed(packed, device=W.device)
+        current = current - W_hat
+
+    return {
+        "passes": passes,
+        "n_passes": n_passes,
+        "total_bits": bit_width * n_passes,
+        "seeds": (seed_a, seed_b),
+    }
+
+
 @torch.no_grad()
 def merge_residual_passes(
     packed_data: dict,
