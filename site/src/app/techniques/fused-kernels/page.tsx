@@ -12,7 +12,7 @@ export default function FusedKernelsPage() {
       color="#7ee787"
       icon="🚀"
       prev={{ href: "/techniques/packing/", label: "4-bit Packing" }}
-      next={{ href: "/techniques/qjl/", label: "Why Not QJL?" }}
+      next={{ href: "/techniques/qjl/", label: "QJL" }}
     >
       <Section title="The Problem: Intermediate Materialization">
         <p className="text-txt-2 leading-relaxed">

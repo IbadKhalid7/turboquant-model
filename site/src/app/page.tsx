@@ -49,10 +49,10 @@ const techniques = [
   },
   {
     href: "/techniques/qjl/",
-    icon: "🚫",
-    title: "Why Not QJL?",
-    desc: "QJL solves a different problem (online inner products). For offline weights, residual quantization strictly dominates.",
-    color: "#f85149",
+    icon: "�",
+    title: "QJL (Quantized JL)",
+    desc: "1-bit random projection for unbiased inner product estimation — elegant for KV-cache, but not used in this project.",
+    color: "#d2a8ff",
   },
 ];
 

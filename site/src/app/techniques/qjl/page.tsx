@@ -6,64 +6,109 @@ import { Reveal } from "@/components/Reveal";
 export default function QjlPage() {
   return (
     <TechniqueLayout
-      title="Why Not QJL?"
-      subtitle="The TurboQuant paper defines TurboQuant_prod using QJL (Quantized Johnson-Lindenstrauss) — but this project deliberately does not use it. Here's why."
-      color="#f85149"
-      icon="🚫"
+      title="Quantized Johnson-Lindenstrauss (QJL)"
+      subtitle="A 1-bit random projection technique for unbiased inner product estimation — elegant for KV-cache attention, but not the right tool for offline weight compression."
+      color="#d2a8ff"
+      icon="📐"
       prev={{ href: "/techniques/fused-kernels/", label: "Fused Kernels" }}
       next={{ href: "/quantize-pipeline/", label: "Quantize Pipeline" }}
     >
-      <Section title="What Is QJL?">
+      {/* ── THE TECHNIQUE ── */}
+
+      <Section title="The Johnson-Lindenstrauss Lemma">
         <p className="text-txt-2 leading-relaxed mb-4">
-          QJL (Quantized Johnson-Lindenstrauss) is based on the Johnson-Lindenstrauss lemma,
-          which states that high-dimensional points can be projected into much lower dimensions
-          while approximately preserving pairwise distances.
+          The JL lemma (1984) states that any set of <Math expr="n" /> points in high-dimensional
+          space can be embedded into <Math expr="O(\log n / \varepsilon^2)" /> dimensions while
+          preserving all pairwise distances within a factor of <Math expr="1 \pm \varepsilon" />.
         </p>
-        <div className="bg-bg-2 border border-border rounded-xl p-6 text-center mb-6">
+        <div className="bg-bg-2 border border-border rounded-xl p-6 text-center mb-4">
           <Math
-            expr="\hat{\langle q, k \rangle} = \frac{1}{m} \sum_{i=1}^{m} \text{sign}(\langle r_i, q \rangle) \cdot \text{sign}(\langle r_i, k \rangle) \cdot \|q\| \cdot \|k\|"
+            expr="(1 - \varepsilon)\|u - v\|^2 \;\leq\; \|f(u) - f(v)\|^2 \;\leq\; (1 + \varepsilon)\|u - v\|^2"
             display
           />
         </div>
         <p className="text-txt-2 leading-relaxed">
-          QJL projects vectors onto random directions and keeps only the <strong className="text-txt">sign</strong> (1 bit per
-          projection). This produces an <strong className="text-txt">unbiased estimator</strong>{" "}
-          of the inner product — the expected value equals the true dot product.
+          The projection is a random linear map — a matrix with i.i.d. Gaussian or
+          sub-Gaussian entries, scaled appropriately. This is the theoretical foundation
+          behind QJL.
         </p>
+      </Section>
+
+      <Section title="How QJL Works">
+        <p className="text-txt-2 leading-relaxed mb-4">
+          QJL (Zandieh et al., 2024) takes the JL idea further: instead of storing the full
+          projected coordinates, it keeps only the <strong className="text-txt">sign</strong> — just
+          1 bit per projection. Given <Math expr="m" /> random directions{" "}
+          <Math expr="r_1, \ldots, r_m" />, the inner product estimator is:
+        </p>
+        <div className="bg-bg-2 border border-border rounded-xl p-6 text-center mb-6">
+          <Math
+            expr="\hat{\langle q, k \rangle} = \frac{\|q\| \cdot \|k\|}{m} \sum_{i=1}^{m} \text{sign}(\langle r_i, q \rangle) \cdot \text{sign}(\langle r_i, k \rangle)"
+            display
+          />
+        </div>
+
+        <div className="bg-bg-2 border border-border rounded-xl p-6 space-y-4">
+          <h4 className="font-semibold text-sm text-accent-purple">Key Properties</h4>
+          <div className="grid md:grid-cols-3 gap-4">
+            <div className="bg-bg-3 rounded-lg p-4 text-center">
+              <div className="text-2xl mb-2">🎯</div>
+              <div className="text-sm font-semibold mb-1">Unbiased</div>
+              <div className="text-xs text-txt-2">
+                <Math expr="\mathbb{E}[\hat{\langle q,k \rangle}] = \langle q,k \rangle" />
+              </div>
+            </div>
+            <div className="bg-bg-3 rounded-lg p-4 text-center">
+              <div className="text-2xl mb-2">💾</div>
+              <div className="text-sm font-semibold mb-1">1 bit per projection</div>
+              <div className="text-xs text-txt-2">Store only sign(⟨r<sub>i</sub>, v⟩)</div>
+            </div>
+            <div className="bg-bg-3 rounded-lg p-4 text-center">
+              <div className="text-2xl mb-2">⚡</div>
+              <div className="text-sm font-semibold mb-1">Zero decode overhead</div>
+              <div className="text-xs text-txt-2">Sign comparisons via bitwise XOR + popcount</div>
+            </div>
+          </div>
+        </div>
       </Section>
 
       <Section title="QJL in the TurboQuant Paper">
         <p className="text-txt-2 leading-relaxed mb-4">
-          The paper defines <strong className="text-accent-purple">TurboQuant<sub>prod</sub></strong>:
+          The paper defines <strong className="text-accent-purple">TurboQuant<sub>prod</sub></strong>,
+          which combines standard TurboQuant with a QJL correction for an unbiased inner product
+          estimator:
         </p>
         <div className="bg-bg-2 border border-border rounded-xl p-6 space-y-3">
           <div className="flex gap-3 items-start">
             <span className="w-6 h-6 rounded-full bg-accent-purple/10 text-accent-purple text-xs font-bold flex items-center justify-center shrink-0">1</span>
-            <span className="text-sm text-txt-2">Quantize the vector using TurboQuant (rotation + Lloyd-Max)</span>
+            <span className="text-sm text-txt-2">Quantize the vector using TurboQuant (rotation + Lloyd-Max) → <Math expr="\tilde{k}" /></span>
           </div>
           <div className="flex gap-3 items-start">
             <span className="w-6 h-6 rounded-full bg-accent-purple/10 text-accent-purple text-xs font-bold flex items-center justify-center shrink-0">2</span>
-            <span className="text-sm text-txt-2">Compute the residual error</span>
+            <span className="text-sm text-txt-2">Compute residual <Math expr="e = k - \tilde{k}" /></span>
           </div>
           <div className="flex gap-3 items-start">
             <span className="w-6 h-6 rounded-full bg-accent-purple/10 text-accent-purple text-xs font-bold flex items-center justify-center shrink-0">3</span>
-            <span className="text-sm text-txt-2">Apply <strong className="text-accent-purple">1-bit QJL</strong> to the residual for an unbiased correction term</span>
+            <span className="text-sm text-txt-2">Apply <strong className="text-accent-purple">1-bit QJL</strong> to <Math expr="e" /> for an unbiased correction: <Math expr="\hat{\langle q,k \rangle} = \langle q, \tilde{k} \rangle + \widehat{\langle q, e \rangle}_{\text{QJL}}" /></span>
           </div>
         </div>
         <p className="text-txt-2 leading-relaxed mt-4">
-          This makes the overall inner product estimator <strong className="text-txt">unbiased</strong> — useful for
-          KV-cache attention where you quantize keys once and query with many different vectors.
+          This makes the overall estimator <strong className="text-txt">unbiased</strong> — critical
+          for KV-cache attention where you quantize keys once and query with many different
+          vectors over the sequence lifetime.
         </p>
       </Section>
 
-      <Section title="Four Reasons We Don't Use QJL">
+      {/* ── WHY NOT IN THIS PROJECT ── */}
+
+      <Section title="Why This Project Doesn't Use QJL">
+        <p className="text-txt-2 leading-relaxed mb-6">
+          QJL is designed for a fundamentally different use case. Here are the four reasons
+          we chose multi-pass residual quantization instead.
+        </p>
         <div className="space-y-4">
           <Reveal>
-            <ReasonCard
-              num="1"
-              title="QJL Solves a Different Problem"
-              color="#f85149"
-            >
+            <ReasonCard num="1" title="Different Problem: Online vs Offline" color="#f85149">
               QJL is designed for <strong className="text-txt">online inner product estimation</strong> — quantize
               once, query many times with different vectors. Weight quantization is{" "}
               <strong className="text-txt">offline</strong>: we compress <Math expr="W" /> once and compute{" "}
@@ -73,11 +118,7 @@ export default function QjlPage() {
           </Reveal>
 
           <Reveal delay={0.1}>
-            <ReasonCard
-              num="2"
-              title="Unbiasedness Is Unnecessary for Weights"
-              color="#ffa657"
-            >
+            <ReasonCard num="2" title="Unbiasedness Is Unnecessary for Weights" color="#ffa657">
               A small deterministic bias from MSE-optimal quantization is absorbed by layer norms,
               residual connections, and softmax normalization. An unbiased but{" "}
               <strong className="text-txt">high-variance</strong> estimator (QJL at 1 bit) introduces
@@ -86,11 +127,7 @@ export default function QjlPage() {
           </Reveal>
 
           <Reveal delay={0.2}>
-            <ReasonCard
-              num="3"
-              title="Residual Quantization Strictly Dominates"
-              color="#7ee787"
-            >
+            <ReasonCard num="3" title="Residual Quantization Strictly Dominates" color="#7ee787">
               <p>
                 QJL uses <strong className="text-txt">1 bit</strong> (random sign projection) for the
                 residual correction. Our residual pass uses <Math expr="b_2" /> bits with a full
@@ -117,11 +154,7 @@ export default function QjlPage() {
           </Reveal>
 
           <Reveal delay={0.3}>
-            <ReasonCard
-              num="4"
-              title="QJL Requires the Query at Runtime"
-              color="#d2a8ff"
-            >
+            <ReasonCard num="4" title="QJL Requires the Query at Runtime" color="#d2a8ff">
               The QJL correction term depends on the input activation <Math expr="x" />, making it
               incompatible with offline weight compression. You&apos;d need to recompute corrections per
               forward pass — defeating the purpose of weight-only quantization.
@@ -134,8 +167,8 @@ export default function QjlPage() {
         <div className="grid md:grid-cols-2 gap-6">
           <Reveal>
             <div className="bg-bg-2 border border-border rounded-xl p-6 relative overflow-hidden">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-red-500/50 to-transparent" />
-              <h4 className="font-semibold text-sm mb-4" style={{ color: "#f85149" }}>
+              <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-accent-purple/70 to-transparent" />
+              <h4 className="font-semibold text-sm mb-4 text-accent-purple">
                 TurboQuant<sub>prod</sub> (Paper)
               </h4>
               <div className="space-y-2 text-xs text-txt-2">
@@ -183,8 +216,9 @@ export default function QjlPage() {
       <Section title="Summary">
         <div className="bg-bg-2 border border-accent-green/20 rounded-xl p-6">
           <p className="text-txt-2 leading-relaxed">
-            QJL is elegant for streaming / KV-cache inner product preservation. For{" "}
-            <strong className="text-txt">weight compression</strong>, multi-pass residual
+            QJL is an elegant technique rooted in the JL lemma — perfect for
+            streaming / KV-cache inner product preservation with 1-bit signed projections.
+            For <strong className="text-txt">offline weight compression</strong>, multi-pass residual
             quantization with optimal scalar codebooks is the natural and superior choice — achieving
             practically lossless results at 4+4 bits with no runtime overhead.
           </p>
@@ -200,6 +234,10 @@ export default function QjlPage() {
           <p>
             <strong className="text-txt">Johnson-Lindenstrauss:</strong> W. Johnson &amp; J. Lindenstrauss,
             &quot;Extensions of Lipschitz mappings into a Hilbert space,&quot; Contemporary Mathematics, 1984.
+          </p>
+          <p>
+            <strong className="text-txt">TurboQuant:</strong> Zandieh et al., &quot;TurboQuant: Online Vector
+            Quantization with Near-optimal Distortion Rate,&quot; arXiv:2504.19874, 2025.
           </p>
         </div>
       </Section>
