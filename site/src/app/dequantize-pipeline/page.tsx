@@ -21,7 +21,7 @@ export default function DequantizePipelinePage() {
       color="#7ee787"
       icon="🔓"
       prev={{ href: "/quantize-pipeline/", label: "Quantize Pipeline" }}
-      next={{ href: "/", label: "Home" }}
+      next={{ href: "/formulation/", label: "Quantization Formulation" }}
     >
       <Section title="The Key Insight">
         <div className="bg-bg-2 border border-accent-green/20 rounded-xl p-6">
