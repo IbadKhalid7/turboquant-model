@@ -13,6 +13,7 @@ const links = [
   { href: "/techniques/qjl/", label: "QJL" },
   { href: "/quantize-pipeline/", label: "Quantize" },
   { href: "/dequantize-pipeline/", label: "Dequantize" },
+  { href: "/formulation/", label: "Formulation" },
 ];
 
 export function Navbar() {

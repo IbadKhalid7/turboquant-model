@@ -269,7 +269,7 @@ export default function HomePage() {
               Pipelines
             </h2>
           </Reveal>
-          <div className="grid md:grid-cols-2 gap-6">
+          <div className="grid md:grid-cols-3 gap-6">
             <Reveal delay={0.1}>
               <Link href="/quantize-pipeline/" className="group block">
                 <div className="bg-bg border border-border rounded-2xl p-8 transition-all duration-300 group-hover:border-accent-orange group-hover:-translate-y-1">
@@ -294,6 +294,21 @@ export default function HomePage() {
                     with CuTile, Triton, and PyTorch fallback.
                   </p>
                   <div className="flex items-center gap-2 mt-4 text-sm text-accent-green">
+                    <span>Explore</span>
+                    <span className="group-hover:translate-x-1 transition-transform">→</span>
+                  </div>
+                </div>
+              </Link>
+            </Reveal>
+            <Reveal delay={0.3}>
+              <Link href="/formulation/" className="group block">
+                <div className="bg-bg border border-border rounded-2xl p-8 transition-all duration-300 group-hover:border-accent-purple group-hover:-translate-y-1">
+                  <h3 className="text-xl font-bold mb-3">Quantization Formulation</h3>
+                  <p className="text-txt-2 text-sm leading-relaxed">
+                    Mathematical foundations: MSE analysis, near-optimality argument, BPW budget,
+                    and research directions for pushing compression further.
+                  </p>
+                  <div className="flex items-center gap-2 mt-4 text-sm text-accent-purple">
                     <span>Explore</span>
                     <span className="group-hover:translate-x-1 transition-transform">→</span>
                   </div>
