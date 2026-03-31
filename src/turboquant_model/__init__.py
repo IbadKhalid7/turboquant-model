@@ -35,8 +35,21 @@ from turboquant_model.module import TurboQuantLinear
 from turboquant_model.model import (
     TurboQuantConfig,
     quantize_model,
+    quantize_model_advanced,
     save_quantized,
     load_quantized,
+)
+from turboquant_model.norm_codec import (
+    FactoredNorms,
+    factorize_norms,
+    reconstruct_norms,
+    norm_bpw,
+)
+from turboquant_model.entropy_codec import (
+    compress_indices,
+    decompress_indices,
+    compute_entropy,
+    measure_compressed_bpw,
 )
 
 __version__ = "0.1.0"
@@ -65,6 +78,17 @@ __all__ = [
     # Model
     "TurboQuantConfig",
     "quantize_model",
+    "quantize_model_advanced",
     "save_quantized",
     "load_quantized",
+    # Norm codec
+    "FactoredNorms",
+    "factorize_norms",
+    "reconstruct_norms",
+    "norm_bpw",
+    # Entropy codec
+    "compress_indices",
+    "decompress_indices",
+    "compute_entropy",
+    "measure_compressed_bpw",
 ]

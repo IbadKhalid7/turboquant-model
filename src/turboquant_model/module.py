@@ -24,6 +24,7 @@ from turboquant_model.rotation import (
 )
 from turboquant_model.quantize import unpack_4bit, pack_4bit
 from turboquant_model.codebook import get_codebook
+from turboquant_model.norm_codec import factorize_norms, reconstruct_norms, FactoredNorms
 
 # Try to import fused kernels — prefers cuTile > Triton > Metal > PyTorch fallback
 _HAS_CUTILE = False
@@ -135,6 +136,15 @@ class TurboQuantLinear(nn.Module):
         self.use_triton: bool = _HAS_TRITON
         self.use_metal: bool = _HAS_METAL
 
+        # Variable bit-width support
+        self._group_bit_widths: Optional[list[int]] = None
+        self._group_codebooks: Optional[list[torch.Tensor]] = None
+        self._indices_uint8: Optional[torch.Tensor] = None  # (M, N) uint8
+
+        # Factored norm support
+        self._factored_norms: Optional[FactoredNorms] = None
+        self._use_factored_norms: bool = False
+
     def set_rotation(self, seed: int):
         self._rotation_seed = seed
         self._rotation_cache.clear()
@@ -156,6 +166,43 @@ class TurboQuantLinear(nn.Module):
     @property
     def has_residual(self) -> bool:
         return self.pass2_indices_packed is not None
+
+    def set_variable_bit_widths(
+        self,
+        group_bit_widths: list[int],
+        group_codebooks: list[torch.Tensor],
+        indices_uint8: torch.Tensor,
+    ):
+        """Set per-group variable bit-widths.
+
+        Args:
+            group_bit_widths: list of int bit-widths per group
+            group_codebooks: list of (2^b_g,) codebook tensors per group
+            indices_uint8: (M, N) uint8 indices
+        """
+        self._group_bit_widths = group_bit_widths
+        self._group_codebooks = group_codebooks
+        self._indices_uint8 = indices_uint8.to(self.indices_packed.device)
+
+    def apply_norm_codec(self, method: str = "factored_int8"):
+        """Apply norm compression (factorization + quantization).
+
+        Args:
+            method: "fp16" or "factored_int8"
+        """
+        norms = self.weight_norms
+        if method == "fp16":
+            self.weight_norms.copy_(norms.half().float())
+        elif method == "factored_int8":
+            self._factored_norms = factorize_norms(norms)
+            # Replace weight_norms with reconstructed (lossy) version
+            reconstructed = reconstruct_norms(self._factored_norms)
+            self.weight_norms.copy_(reconstructed)
+            self._use_factored_norms = True
+
+    @property
+    def has_variable_bit_widths(self) -> bool:
+        return self._group_bit_widths is not None
 
     def _get_rotation(self, seed: int, g_start: int = 0) -> torch.Tensor:
         """Get cached rotation matrix for a specific group.
@@ -260,10 +307,16 @@ class TurboQuantLinear(nn.Module):
                 )
             else:
                 # PyTorch fallback: explicit unpack + lookup + matmul
-                if indices is None:
-                    indices = unpack_4bit(indices_packed, K)
-                idx_g = indices[:, g_start:g_end]  # (N, g_dim)
-                W_g = codebook[idx_g.long()]       # (N, g_dim)
+                # Per-group codebook for variable bit-width
+                if self._group_codebooks is not None and self._indices_uint8 is not None:
+                    cb_g = self._group_codebooks[g]
+                    idx_g = self._indices_uint8[:, g_start:g_end].long()
+                    W_g = cb_g[idx_g]
+                else:
+                    if indices is None:
+                        indices = unpack_4bit(indices_packed, K)
+                    idx_g = indices[:, g_start:g_end]  # (N, g_dim)
+                    W_g = codebook[idx_g.long()]       # (N, g_dim)
                 out_g = x_rot_g @ W_g.T
                 out_g = out_g * (norms_g[None, :] / scale)
 
@@ -285,7 +338,11 @@ class TurboQuantLinear(nn.Module):
 
         # Pass 1
         _use_fused = self.use_cutile or self.use_triton or self.use_metal
-        indices = None if _use_fused else self._get_indices()
+        # Skip unpack_4bit when using variable bit-width path (uint8 indices)
+        if _use_fused or self._indices_uint8 is not None:
+            indices = None
+        else:
+            indices = self._get_indices()
         output = self._forward_pass(
             x_f, indices, self.indices_packed, self.codebook,
             self.weight_norms, self._rotation_seed,

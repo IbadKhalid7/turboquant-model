@@ -9,7 +9,7 @@ dependencies = [
     "torch>=2.0",
     "numpy",
     "scipy",
-    "triton>=3.0",
+    "triton>=3.0; sys_platform == 'linux'",
     "safetensors>=0.4",
 ]
 

@@ -25,6 +25,7 @@ from turboquant_model.rotation import (
     hadamard_rotate,
     hadamard_rotate_inverse,
 )
+from turboquant_model.norm_codec import factorize_norms, reconstruct_norms
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ class TurboQuantConfig:
     #   "shared"    — both passes use the same seed (enables merge_and_requantize)
     #   "alternating" — even passes use seed, odd passes use residual_seed (for multi-pass)
     rotation_strategy: str = "different"
+
+    # Advanced features
+    norm_codec: str = "fp32"         # norm compression: "fp32", "fp16", "factored_int8"
+    entropy_coding: bool = False     # rANS entropy coding of indices
 
     def save(self, path: str | Path):
         with open(path, "w") as f:
@@ -178,6 +183,111 @@ def quantize_model(model: nn.Module, config: TurboQuantConfig) -> nn.Module:
     return model
 
 
+@torch.no_grad()
+def quantize_model_advanced(model: nn.Module, config: TurboQuantConfig) -> nn.Module:
+    """Quantize with norm factorization and entropy coding support.
+
+    Supports all features from quantize_model plus:
+    - norm_codec: compress norms via factorization ("fp16", "factored_int8")
+    - entropy_coding: flag only (actual compression measured separately)
+    - Non-4-bit quantization via per-group variable bit-width path
+
+    Args:
+        model: HuggingFace model
+        config: quantization config with advanced options
+
+    Returns:
+        model with TurboQuantLinear modules (modified in-place)
+    """
+    centroids_cache = {}
+    boundaries_cache = {}
+
+    def _get_codebook_cached(bw):
+        if bw not in centroids_cache:
+            c, b = get_codebook(bw)
+            centroids_cache[bw] = c
+            boundaries_cache[bw] = b
+        return centroids_cache[bw], boundaries_cache[bw]
+
+    replaced = 0
+    total_orig = 0
+    total_compressed = 0
+
+    replacements = []
+    for name, module in model.named_modules():
+        if not isinstance(module, nn.Linear):
+            continue
+        if config.skip_embeddings and "embed" in name.lower():
+            continue
+        if config.skip_lm_head and "lm_head" in name.lower():
+            continue
+        replacements.append((name, module))
+
+    for name, module in replacements:
+        W = module.weight.data
+        M, N = W.shape
+        device = W.device
+        group_size = config.group_size or N
+        n_groups = math.ceil(N / group_size)
+
+        group_bit_widths = [config.bit_width] * n_groups
+
+        # --- Quantize with per-group bit-widths ---
+        packed, norms, group_codebooks, indices_uint8 = _quantize_weight_variable(
+            W, group_bit_widths, group_size, config.seed, device,
+            rotation=config.rotation, codebook_cache=(_get_codebook_cached,),
+        )
+
+        # --- Create TurboQuantLinear ---
+        tq = TurboQuantLinear(
+            in_features=N,
+            out_features=M,
+            bias=module.bias is not None,
+            bit_width=config.bit_width,
+            group_size=group_size,
+            device=device,
+            rotation=config.rotation,
+        )
+
+        # Use uint8 path for non-4-bit
+        if config.bit_width != 4:
+            tq.set_variable_bit_widths(
+                group_bit_widths=group_bit_widths,
+                group_codebooks=group_codebooks,
+                indices_uint8=indices_uint8,
+            )
+        else:
+            tq.indices_packed.copy_(packed)
+            tq.codebook.copy_(centroids_cache[config.bit_width].to(device))
+
+        tq.weight_norms.copy_(norms)
+        tq.set_rotation(config.seed)
+
+        if module.bias is not None:
+            tq.bias.copy_(module.bias.data)
+
+        # --- Apply norm compression ---
+        if config.norm_codec != "fp32" and norms.dim() == 2:
+            tq.apply_norm_codec(config.norm_codec)
+
+        _replace_module(model, name, tq)
+
+        orig_bytes = M * N * 2  # bf16
+        total_orig += orig_bytes
+        total_compressed += tq.memory_bytes()
+        replaced += 1
+
+    nf_str = f"+{config.norm_codec}" if config.norm_codec != "fp32" else ""
+    ec_str = "+EC" if config.entropy_coding else ""
+    logger.info(
+        f"Quantized {replaced} layers ({config.bit_width}-bit{nf_str}{ec_str}): "
+        f"{total_orig / 1024**2:.1f}MB → {total_compressed / 1024**2:.1f}MB "
+        f"({total_orig / total_compressed:.1f}x compression)"
+    )
+
+    return model
+
+
 def _quantize_weight(
     W: torch.Tensor,
     bit_width: int,
@@ -230,6 +340,73 @@ def _quantize_weight(
 
     packed = pack_4bit(full_indices)
     return packed, norms_out, ctr
+
+
+def _quantize_weight_variable(
+    W: torch.Tensor,
+    group_bit_widths: list[int],
+    group_size: int,
+    seed: int,
+    device: torch.device,
+    rotation: str = "qr",
+    codebook_cache: tuple | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor], torch.Tensor]:
+    """Quantize with per-group variable bit-widths.
+
+    Returns: (indices_packed_4bit, norms, group_codebooks, indices_uint8)
+        - indices_packed_4bit: standard 4-bit packed (for uniform case)
+        - norms: (M, G) float32
+        - group_codebooks: list of (2^b_g,) tensors per group
+        - indices_uint8: (M, N) uint8 (for variable bit-width case)
+    """
+    M, N = W.shape
+    W = W.float()
+
+    get_cb = codebook_cache[0] if codebook_cache else lambda bw: get_codebook(bw)
+
+    all_norms = []
+    all_indices = []
+    group_codebooks = []
+
+    for g_idx, g_start in enumerate(range(0, N, group_size)):
+        g_end = min(g_start + group_size, N)
+        g_dim = g_end - g_start
+        W_g = W[:, g_start:g_end]
+        bw = group_bit_widths[g_idx]
+
+        centroids, boundaries = get_cb(bw)
+        ctr = centroids.to(device)
+        bnd = boundaries.to(device)
+        group_codebooks.append(ctr)
+
+        norms = W_g.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        W_norm = W_g / norms
+        all_norms.append(norms.squeeze(1))
+
+        if rotation == "hadamard":
+            Y = hadamard_rotate(W_norm, seed=seed + g_start)
+        else:
+            Pi = generate_rotation_matrix(g_dim, seed=seed + g_start).to(device)
+            Y = W_norm @ Pi.T
+        scale = math.sqrt(g_dim)
+        Y_scaled = Y * scale
+
+        indices = torch.searchsorted(bnd, Y_scaled.reshape(-1))
+        indices = indices.clamp(0, len(ctr) - 1).reshape(M, g_dim)
+        all_indices.append(indices)
+
+    full_indices = torch.cat(all_indices, dim=1)
+    norms_out = torch.stack(all_norms, dim=1) if len(all_norms) > 1 else all_norms[0]
+
+    # uint8 indices for variable bit-width
+    indices_uint8 = full_indices.to(torch.uint8)
+
+    # Also produce 4-bit packed (for uniform case)
+    if N % 2 != 0:
+        full_indices = torch.nn.functional.pad(full_indices, (0, 1), value=0)
+    packed = pack_4bit(full_indices)
+
+    return packed, norms_out, group_codebooks, indices_uint8
 
 
 # ---------------------------------------------------------------------------
