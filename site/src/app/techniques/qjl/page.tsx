@@ -10,7 +10,7 @@ export default function QjlPage() {
       subtitle="A 1-bit random projection technique for unbiased inner product estimation — elegant for KV-cache attention, but not the right tool for offline weight compression."
       color="#d2a8ff"
       icon="📐"
-      prev={{ href: "/techniques/fused-kernels/", label: "Fused Kernels" }}
+      prev={{ href: "/techniques/norm-codec/", label: "Norm Compression" }}
       next={{ href: "/quantize-pipeline/", label: "Quantize Pipeline" }}
     >
       {/* ── THE TECHNIQUE ── */}

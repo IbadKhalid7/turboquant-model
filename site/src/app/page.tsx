@@ -48,6 +48,20 @@ const techniques = [
     color: "#7ee787",
   },
   {
+    href: "/techniques/entropy-codec/",
+    icon: "🗜️",
+    title: "Entropy Coding (rANS)",
+    desc: "Compress indices below nominal bit-width via rANS — saves ~0.24 BPW by exploiting non-uniform Gaussian bin probabilities.",
+    color: "#f778ba",
+  },
+  {
+    href: "/techniques/norm-codec/",
+    icon: "📐",
+    title: "Norm Compression",
+    desc: "Rank-1 SVD + int8 residual factorizes the norm tensor α_{m,g} — reducing norm overhead from 0.25 to ~0.06 BPW.",
+    color: "#79c0ff",
+  },
+  {
     href: "/techniques/qjl/",
     icon: "�",
     title: "QJL (Quantized JL)",
@@ -232,7 +246,7 @@ export default function HomePage() {
               Core Techniques
             </h2>
             <p className="text-txt-2 mb-10 max-w-2xl">
-              Six techniques combine to achieve near-information-theoretic-optimal weight compression.
+              Eight techniques combine to achieve near-information-theoretic-optimal weight compression.
               Click any card to explore in depth.
             </p>
           </Reveal>
