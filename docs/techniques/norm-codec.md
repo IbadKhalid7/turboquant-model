@@ -6,7 +6,7 @@ This document describes the norm codec module that reduces the storage overhead 
 
 ## Formulation Context: Norm Storage
 
-In the [quantization formulation](quantization-formulation.md), the norm tensor $\alpha_{m,g} \in \mathbb{R}^{M \times G}$ is the **second-largest** storage component after the index tensor:
+In the [quantization formulation](../formulation.md), the norm tensor $\alpha_{m,g} \in \mathbb{R}^{M \times G}$ is the **second-largest** storage component after the index tensor:
 
 $$\text{BPW} \approx b + \underbrace{\frac{32 \cdot n_{\text{norm}}}{d}}_{\text{norm overhead}} + \text{BPW}_{\text{non-quant}}$$
 

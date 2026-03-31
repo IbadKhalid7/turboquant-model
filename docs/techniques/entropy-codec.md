@@ -6,7 +6,7 @@ This document describes the entropy coding module that compresses quantized indi
 
 ## Formulation Context: Index Storage
 
-In the [quantization formulation](quantization-formulation.md), the **dominant** term in the BPW budget is the **index tensor** $\boldsymbol{\ell}_{m,k}$, stored at $b$ bits per weight:
+In the [quantization formulation](../formulation.md), the **dominant** term in the BPW budget is the **index tensor** $\boldsymbol{\ell}_{m,k}$, stored at $b$ bits per weight:
 
 $$\text{BPW} \approx \underbrace{b}_{\text{indices}} + \frac{32}{d} + \text{BPW}_{\text{non-quant}}$$
 

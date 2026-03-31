@@ -210,6 +210,99 @@ For an M×N weight matrix at b bits per weight:
 
 ---
 
+## Norm Codec
+
+The norm tensor $\alpha_{m,g}$ is the second-largest storage component after the index tensor. The `norm_codec` option controls how norms are stored.
+
+| Method | Storage per norm | BPW overhead ($d = 128$) | Description |
+|---|---|---|---|
+| `"fp32"` (default) | 32 bits | 0.250 | Full-precision norms |
+| `"fp16"` | 16 bits | 0.125 | Half-precision (negligible quality loss) |
+| `"factored_int8"` | ~8 bits effective | ~0.063 | Rank-1 SVD + int8 residual (~4× compression vs fp32) |
+
+The factored int8 method decomposes $\alpha_{m,g} \approx \beta_m \cdot \gamma_g \cdot (1 + s \cdot \hat{\varepsilon}_{m,g})$ where $\beta_m$ (row scale, fp16), $\gamma_g$ (group scale, fp16), and $\hat{\varepsilon}_{m,g}$ (residual, int8) are stored compactly.
+
+```python
+config = TurboQuantConfig(bit_width=4, seed=42, norm_codec="factored_int8")
+```
+
+```bash
+turboquant quantize --model Qwen/Qwen3.5-0.8B-Base --output ./quantized \
+    --bit-width 4 --norm-codec factored_int8
+```
+
+**Factored storage per layer:**
+| Component | Shape | Dtype | Description |
+|---|---|---|---|
+| `{name}.norms.row_scale` | $(M,)$ | float16 | Row scales $\beta_m$ |
+| `{name}.norms.group_scale` | $(G,)$ | float16 | Group scales $\gamma_g$ |
+| `{name}.norms.residual` | $(M, G)$ | int8 | Fractional residual $\hat{\varepsilon}_{m,g}$ |
+| `{name}.norms.residual_scale` | scalar | float32 | Quantization scale $s$ |
+
+With two residual passes at $d = 128$, switching from fp32 to factored int8 norms saves ~0.38 BPW total.
+
+See [techniques/norm-codec.md](techniques/norm-codec.md) for the mathematical derivation.
+
+---
+
+## Entropy Coding
+
+When `entropy_coding=True`, the packed index tensor is further compressed using rANS (Asymmetric Numeral Systems). This exploits the non-uniform Gaussian bin probabilities of the Lloyd-Max codebook — inner levels are more probable than outer ones.
+
+| Bit-width | Nominal BPW | Entropy $H$ | Saving |
+|---|---|---|---|
+| 2 | 2.0 | 1.911 | 0.089 |
+| 3 | 3.0 | 2.832 | 0.168 |
+| 4 | 4.0 | 3.764 | 0.236 |
+| 5 | 5.0 | 4.755 | 0.245 |
+
+At 4 bits, entropy coding saves **~0.24 BPW** on the index tensor — bringing the index cost from 4.0 to ~3.76 bits per weight.
+
+```python
+config = TurboQuantConfig(bit_width=4, seed=42, entropy_coding=True)
+```
+
+```bash
+turboquant quantize --model Qwen/Qwen3.5-0.8B-Base --output ./quantized \
+    --bit-width 4 --entropy-coding
+```
+
+**Storage with entropy coding:**
+| Component | Description |
+|---|---|
+| `{name}.indices_compressed` | rANS-compressed byte stream (replaces `{name}.indices`) |
+| `{name}.ans_states` | Per-block initial states (4 bytes each, 1 per 4096 symbols) |
+| `{name}.original_shape` | Original tensor shape for correct decompression |
+
+At inference time, indices are decompressed block-by-block on the GPU. Each block of 4096 symbols can be decoded independently, enabling parallel GPU execution.
+
+See [techniques/entropy-codec.md](techniques/entropy-codec.md) for the rANS algorithm details.
+
+---
+
+## Combining Options
+
+Norm codec and entropy coding are orthogonal and can be combined for maximum compression:
+
+```python
+config = TurboQuantConfig(
+    bit_width=4,
+    seed=42,
+    norm_codec="factored_int8",
+    entropy_coding=True,
+)
+```
+
+**BPW budget breakdown (4-bit, $d = 128$, single pass):**
+
+| Component | Default | + Norm codec | + Entropy | Both |
+|---|---|---|---|---|
+| Indices | 4.000 | 4.000 | 3.764 | 3.764 |
+| Norms | 0.250 | 0.063 | 0.250 | 0.063 |
+| **Total** | **4.250** | **4.063** | **4.014** | **3.827** |
+
+---
+
 ## Configuration Reference
 
 | Parameter | Default | Description |
@@ -220,5 +313,8 @@ For an M×N weight matrix at b bits per weight:
 | `residual_bit_width` | None | Bits for residual pass (None = single-pass only) |
 | `residual_seed` | 1042 | Rotation seed for residual pass |
 | `rotation` | "qr" | Rotation method: "qr" (Haar random) or "hadamard" (fast Walsh-Hadamard) |
+| `rotation_strategy` | "different" | Rotation strategy for residual passes: "different", "shared", "alternating" |
+| `norm_codec` | "fp32" | Norm compression: "fp32", "fp16", "factored_int8" |
+| `entropy_coding` | False | Enable rANS entropy coding of indices |
 | `skip_embeddings` | False | Skip embedding layers |
 | `skip_lm_head` | False | Skip the language model head |
