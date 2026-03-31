@@ -166,10 +166,13 @@ def quantize_model(model: nn.Module, config: TurboQuantConfig) -> nn.Module:
 
     mode = "residual" if config.residual_bit_width else "single-pass"
     bits = f"{config.bit_width}" if not config.residual_bit_width else f"{config.bit_width}+{config.residual_bit_width}"
+    compression_ratio = (
+        f"{total_orig / total_compressed:.1f}x" if total_compressed > 0 else "N/A"
+    )
     logger.info(
         f"Quantized {replaced} layers ({mode}, {bits}-bit): "
         f"{total_orig / 1024**2:.1f}MB → {total_compressed / 1024**2:.1f}MB "
-        f"({total_orig / total_compressed:.1f}x compression)"
+        f"({compression_ratio} compression)"
     )
 
     return model
