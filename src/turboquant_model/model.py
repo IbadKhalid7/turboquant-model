@@ -72,6 +72,7 @@ class TurboQuantConfig:
     #   "different" — pass 1 uses seed, pass 2 uses residual_seed (default, best quality)
     #   "shared"    — both passes use the same seed (enables merge_and_requantize)
     #   "alternating" — even passes use seed, odd passes use residual_seed (for multi-pass)
+    #   "per_layer"  — each layer gets a unique seed (seed + layer_idx * 10007) to decorrelate errors
     rotation_strategy: str = "different"
 
     # Advanced features
@@ -130,16 +131,22 @@ def quantize_model(model: nn.Module, config: TurboQuantConfig) -> nn.Module:
             continue
         replacements.append((name, module))
 
-    for name, module in replacements:
+    for layer_idx, (name, module) in enumerate(replacements):
         W = module.weight.data
         M, N = W.shape
         device = W.device
 
         group_size = config.group_size or N
 
+        # Per-layer rotation: each layer gets a unique base seed
+        if config.rotation_strategy == "per_layer":
+            layer_seed = config.seed + layer_idx * 10007
+        else:
+            layer_seed = config.seed
+
         # --- Pass 1: Quantize weight ---
         pass1_packed, pass1_norms, pass1_codebook = _quantize_weight(
-            W, config.bit_width, group_size, config.seed, centroids, boundaries, device,
+            W, config.bit_width, group_size, layer_seed, centroids, boundaries, device,
             rotation=config.rotation,
         )
 
@@ -156,7 +163,7 @@ def quantize_model(model: nn.Module, config: TurboQuantConfig) -> nn.Module:
         tq.indices_packed.copy_(pass1_packed)
         tq.weight_norms.copy_(pass1_norms)
         tq.codebook.copy_(centroids.to(device))
-        tq.set_rotation(config.seed)
+        tq.set_rotation(layer_seed)
 
         if module.bias is not None:
             tq.bias.copy_(module.bias.data)
@@ -169,7 +176,9 @@ def quantize_model(model: nn.Module, config: TurboQuantConfig) -> nn.Module:
 
             # Determine residual rotation seed based on strategy
             if config.rotation_strategy == "shared":
-                pass2_seed = config.seed
+                pass2_seed = layer_seed
+            elif config.rotation_strategy == "per_layer":
+                pass2_seed = config.residual_seed + layer_idx * 10007
             else:  # "different" or "alternating" — both use residual_seed for pass 2
                 pass2_seed = config.residual_seed
 
@@ -247,18 +256,24 @@ def quantize_model_advanced(model: nn.Module, config: TurboQuantConfig) -> nn.Mo
             continue
         replacements.append((name, module))
 
-    for name, module in replacements:
+    for layer_idx, (name, module) in enumerate(replacements):
         W = module.weight.data
         M, N = W.shape
         device = W.device
         group_size = config.group_size or N
         n_groups = math.ceil(N / group_size)
 
+        # Per-layer rotation: each layer gets a unique base seed
+        if config.rotation_strategy == "per_layer":
+            layer_seed = config.seed + layer_idx * 10007
+        else:
+            layer_seed = config.seed
+
         group_bit_widths = [config.bit_width] * n_groups
 
         # --- Quantize with per-group bit-widths ---
         packed, norms, group_codebooks, indices_uint8 = _quantize_weight_variable(
-            W, group_bit_widths, group_size, config.seed, device,
+            W, group_bit_widths, group_size, layer_seed, device,
             rotation=config.rotation, codebook_cache=(_get_codebook_cached,),
         )
 
@@ -285,7 +300,7 @@ def quantize_model_advanced(model: nn.Module, config: TurboQuantConfig) -> nn.Mo
             tq.codebook.copy_(centroids_cache[config.bit_width].to(device))
 
         tq.weight_norms.copy_(norms)
-        tq.set_rotation(config.seed)
+        tq.set_rotation(layer_seed)
 
         if module.bias is not None:
             tq.bias.copy_(module.bias.data)
