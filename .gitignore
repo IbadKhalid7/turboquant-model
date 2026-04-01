@@ -10,6 +10,7 @@ wheels/
 .venv
 .github/instructions
 logs
+.venv-wsl
 
 # Next.js site
 site/node_modules/
