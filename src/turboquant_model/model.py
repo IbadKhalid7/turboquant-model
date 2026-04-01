@@ -25,9 +25,33 @@ from turboquant_model.rotation import (
     hadamard_rotate,
     hadamard_rotate_inverse,
 )
-from turboquant_model.norm_codec import factorize_norms, reconstruct_norms
+from turboquant_model.norm_compression import factorize_norms, reconstruct_norms
 
 logger = logging.getLogger(__name__)
+
+
+def _entropy_compress_indices(
+    packed: torch.Tensor, bit_width: int, N: int,
+) -> torch.Tensor:
+    """Compress packed indices with rANS, returning a 1D uint8 tensor."""
+    from turboquant_model.entropy_codec import compress_indices
+    from turboquant_model.quantize import unpack_4bit
+
+    indices = unpack_4bit(packed, N)
+    compressed_bytes, _ = compress_indices(indices, bit_width)
+    return torch.frombuffer(bytearray(compressed_bytes), dtype=torch.uint8).clone()
+
+
+def _entropy_decompress_indices(
+    compressed_tensor: torch.Tensor, bit_width: int, M: int, N: int,
+) -> torch.Tensor:
+    """Decompress rANS bytes back to packed 4-bit indices."""
+    from turboquant_model.entropy_codec import decompress_indices
+    from turboquant_model.quantize import pack_4bit
+
+    data = bytes(compressed_tensor.cpu().numpy())
+    indices = decompress_indices(data, bit_width, (M, N))
+    return pack_4bit(indices)
 
 
 @dataclass
@@ -424,6 +448,10 @@ def save_quantized(model: nn.Module, config: TurboQuantConfig, save_dir: str | P
         ├── model.safetensors          # all quantized layer tensors + codebook
         ├── non_quantized.safetensors  # non-linear params (embeddings, norms, etc.)
         └── config.json                # (optional) HuggingFace model config
+
+    When ``config.entropy_coding`` is True, indices are rANS-compressed and
+    stored as ``{layer}.indices_ec`` (1-D uint8) with shape metadata in
+    ``{layer}.indices_ec_shape`` (int32 tensor [M, N]).
     """
     from safetensors.torch import save_file
 
@@ -443,14 +471,52 @@ def save_quantized(model: nn.Module, config: TurboQuantConfig, save_dir: str | P
     for name, module in model.named_modules():
         if isinstance(module, TurboQuantLinear):
             safe = name.replace(".", "_")
-            tensors[f"{safe}.indices"] = module.indices_packed.cpu().contiguous()
-            tensors[f"{safe}.norms"] = module.weight_norms.cpu().contiguous()
+
+            if config.entropy_coding:
+                ec = _entropy_compress_indices(
+                    module.indices_packed.cpu(), config.bit_width, module.in_features,
+                )
+                tensors[f"{safe}.indices_ec"] = ec.contiguous()
+                tensors[f"{safe}.indices_ec_shape"] = torch.tensor(
+                    [module.out_features, module.in_features], dtype=torch.int32,
+                )
+            else:
+                tensors[f"{safe}.indices"] = module.indices_packed.cpu().contiguous()
+
+            # Save norms: factored (compact) or full
+            if (
+                config.norm_codec == "factored_int8"
+                and hasattr(module, "_factored_norms")
+                and module._factored_norms is not None
+            ):
+                fn = module._factored_norms
+                tensors[f"{safe}.norms.row_scale"] = fn.row_scale.cpu().contiguous()
+                tensors[f"{safe}.norms.group_scale"] = fn.group_scale.cpu().contiguous()
+                tensors[f"{safe}.norms.residual"] = fn.residual_int8.cpu().contiguous()
+                tensors[f"{safe}.norms.residual_scale"] = torch.tensor(
+                    [fn.residual_scale], dtype=torch.float32,
+                )
+            elif config.norm_codec == "fp16":
+                tensors[f"{safe}.norms"] = module.weight_norms.cpu().half().contiguous()
+            else:
+                tensors[f"{safe}.norms"] = module.weight_norms.cpu().contiguous()
 
             if module.bias is not None:
                 tensors[f"{safe}.bias"] = module.bias.cpu().contiguous()
 
             if module.has_residual:
-                tensors[f"{safe}.pass2_indices"] = module.pass2_indices_packed.cpu().contiguous()
+                if config.entropy_coding:
+                    ec2 = _entropy_compress_indices(
+                        module.pass2_indices_packed.cpu(),
+                        config.residual_bit_width or config.bit_width,
+                        module.in_features,
+                    )
+                    tensors[f"{safe}.pass2_indices_ec"] = ec2.contiguous()
+                    tensors[f"{safe}.pass2_indices_ec_shape"] = torch.tensor(
+                        [module.out_features, module.in_features], dtype=torch.int32,
+                    )
+                else:
+                    tensors[f"{safe}.pass2_indices"] = module.pass2_indices_packed.cpu().contiguous()
                 tensors[f"{safe}.pass2_norms"] = module.pass2_weight_norms.cpu().contiguous()
                 tensors[f"{safe}.pass2_codebook"] = module.pass2_codebook.cpu().clone()
 
@@ -538,7 +604,8 @@ def load_quantized(
 
         if use_safetensors:
             indices_key = f"{safe}.indices"
-            if indices_key not in tensors:
+            indices_ec_key = f"{safe}.indices_ec"
+            if indices_key not in tensors and indices_ec_key not in tensors:
                 continue
         else:
             indices_path = layers_dir / f"{safe}.indices.pt"
@@ -559,8 +626,32 @@ def load_quantized(
         )
 
         if use_safetensors:
-            tq.indices_packed = tensors[f"{safe}.indices"]
-            tq.weight_norms = tensors[f"{safe}.norms"]
+            ec_key = f"{safe}.indices_ec"
+            if ec_key in tensors:
+                shape_t = tensors[f"{safe}.indices_ec_shape"]
+                ec_M, ec_N = int(shape_t[0]), int(shape_t[1])
+                tq.indices_packed = _entropy_decompress_indices(
+                    tensors[ec_key], config.bit_width, ec_M, ec_N,
+                ).to(device)
+            else:
+                tq.indices_packed = tensors[f"{safe}.indices"]
+
+            # Load norms: factored or full
+            norms_row_key = f"{safe}.norms.row_scale"
+            norms_full_key = f"{safe}.norms"
+            if norms_row_key in tensors:
+                from turboquant_model.norm_compression import FactoredNorms, reconstruct_norms
+                fn = FactoredNorms(
+                    row_scale=tensors[f"{safe}.norms.row_scale"],
+                    group_scale=tensors[f"{safe}.norms.group_scale"],
+                    residual_int8=tensors[f"{safe}.norms.residual"],
+                    residual_scale=float(tensors[f"{safe}.norms.residual_scale"][0]),
+                )
+                tq.weight_norms = reconstruct_norms(fn).to(device)
+                tq._factored_norms = fn
+                tq._use_factored_norms = True
+            elif norms_full_key in tensors:
+                tq.weight_norms = tensors[norms_full_key].float().to(device)
         else:
             tq.indices_packed = torch.load(layers_dir / f"{safe}.indices.pt", map_location=device, weights_only=True)
             tq.weight_norms = torch.load(layers_dir / f"{safe}.norms.pt", map_location=device, weights_only=True)
@@ -582,7 +673,21 @@ def load_quantized(
         # Load residual pass if present
         if use_safetensors:
             pass2_key = f"{safe}.pass2_indices"
-            if pass2_key in tensors:
+            pass2_ec_key = f"{safe}.pass2_indices_ec"
+            if pass2_ec_key in tensors:
+                shape_t = tensors[f"{safe}.pass2_indices_ec_shape"]
+                ec_M, ec_N = int(shape_t[0]), int(shape_t[1])
+                p2_bw = config.residual_bit_width or config.bit_width
+                pass2_packed = _entropy_decompress_indices(
+                    tensors[pass2_ec_key], p2_bw, ec_M, ec_N,
+                ).to(device)
+                tq.set_pass2(
+                    indices_packed=pass2_packed,
+                    weight_norms=tensors[f"{safe}.pass2_norms"],
+                    codebook=tensors[f"{safe}.pass2_codebook"],
+                    seed=config.residual_seed,
+                )
+            elif pass2_key in tensors:
                 tq.set_pass2(
                     indices_packed=tensors[pass2_key],
                     weight_norms=tensors[f"{safe}.pass2_norms"],

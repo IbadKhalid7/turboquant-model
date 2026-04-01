@@ -55,7 +55,7 @@ const techniques = [
     color: "#f778ba",
   },
   {
-    href: "/techniques/norm-codec/",
+    href: "/techniques/norm-compression/",
     icon: "📐",
     title: "Norm Compression",
     desc: "Rank-1 SVD + int8 residual factorizes the norm tensor α_{m,g} — reducing norm overhead from 0.25 to ~0.06 BPW.",

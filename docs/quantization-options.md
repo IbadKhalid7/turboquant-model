@@ -241,7 +241,7 @@ turboquant quantize --model Qwen/Qwen3.5-0.8B-Base --output ./quantized \
 
 With two residual passes at $d = 128$, switching from fp32 to factored int8 norms saves ~0.38 BPW total.
 
-See [techniques/norm-codec.md](techniques/norm-codec.md) for the mathematical derivation.
+See [techniques/norm-compression.md](techniques/norm-compression.md) for the mathematical derivation.
 
 ---
 
@@ -270,9 +270,8 @@ turboquant quantize --model Qwen/Qwen3.5-0.8B-Base --output ./quantized \
 **Storage with entropy coding:**
 | Component | Description |
 |---|---|
-| `{name}.indices_compressed` | rANS-compressed byte stream (replaces `{name}.indices`) |
-| `{name}.ans_states` | Per-block initial states (4 bytes each, 1 per 4096 symbols) |
-| `{name}.original_shape` | Original tensor shape for correct decompression |
+| `{name}.indices_ec` | rANS-compressed byte stream (replaces `{name}.indices`) |
+| `{name}.indices_ec_shape` | Original tensor shape `[M, N]` for correct decompression |
 
 At inference time, indices are decompressed block-by-block on the GPU. Each block of 4096 symbols can be decoded independently, enabling parallel GPU execution.
 

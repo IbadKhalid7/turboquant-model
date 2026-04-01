@@ -24,7 +24,7 @@ from turboquant_model.rotation import (
 )
 from turboquant_model.quantize import unpack_4bit, pack_4bit
 from turboquant_model.codebook import get_codebook
-from turboquant_model.norm_codec import factorize_norms, reconstruct_norms, FactoredNorms
+from turboquant_model.norm_compression import factorize_norms, reconstruct_norms, FactoredNorms
 
 # Try to import fused kernels — prefers cuTile > Triton > Metal > PyTorch fallback
 _HAS_CUTILE = False

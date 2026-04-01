@@ -53,7 +53,7 @@ def cmd_quantize(args: argparse.Namespace):
     """Quantize a model and save to disk."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    from turboquant_model.model import TurboQuantConfig, quantize_model, save_quantized
+    from turboquant_model.model import TurboQuantConfig, quantize_model, quantize_model_advanced, save_quantized
 
     device = args.device or _auto_device()
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
@@ -73,11 +73,18 @@ def cmd_quantize(args: argparse.Namespace):
         residual_seed=args.residual_seed,
         rotation=args.rotation,
         rotation_strategy=args.rotation_strategy,
+        norm_codec=getattr(args, 'norm_codec', 'fp32') or 'fp32',
+        entropy_coding=getattr(args, 'entropy_coding', False),
     )
 
     logger.info(f"Quantizing: {config.bit_width}-bit"
-                + (f"+{config.residual_bit_width}-bit residual" if config.residual_bit_width else ""))
-    model = quantize_model(model, config)
+                + (f"+{config.residual_bit_width}-bit residual" if config.residual_bit_width else "")
+                + (f" norm_codec={config.norm_codec}" if config.norm_codec != "fp32" else "")
+                + (" +entropy_coding" if config.entropy_coding else ""))
+    if config.norm_codec != "fp32":
+        model = quantize_model_advanced(model, config)
+    else:
+        model = quantize_model(model, config)
 
     if device == "cpu":
         _disable_fused_kernels(model)
@@ -316,6 +323,10 @@ def main():
                          default="different",
                          help="Rotation strategy for residual: different (default, best quality), "
                               "shared (enables merge_and_requantize), alternating (for multi-pass)")
+    p_quant.add_argument("--norm-codec", choices=["fp32", "fp16", "factored_int8"],
+                         default="fp32", help="Norm compression method")
+    p_quant.add_argument("--entropy-coding", action="store_true",
+                         help="Enable rANS entropy coding of quantized indices")
 
     # --- eval ---
     p_eval = subparsers.add_parser("eval", help="Evaluate PPL on WikiText-103")

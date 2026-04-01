@@ -131,6 +131,6 @@ The merged result is re-normalized and re-quantized into a single-pass represent
 
 - **Lloyd-Max Quantization**: Each pass applies Lloyd-Max quantization independently. The residual after each pass is approximately Gaussian (after re-rotation), so the same codebook family remains near-optimal.
 - **Random Rotation**: The rotation strategy (independent, shared, alternating) is a key design choice that trades quality for mergeability.
-- **Norm Compression**: Each residual pass produces its own norm tensor. Residual norms are smaller and more structured, making [norm factorization](norm-codec.md) especially effective.
+- **Norm Compression**: Each residual pass produces its own norm tensor. Residual norms are smaller and more structured, making [norm factorization](norm-compression.md) especially effective.
 - **Entropy Coding**: Each pass produces an independent index tensor that can be [entropy coded](entropy-codec.md) separately.
 - **4-bit Packing**: Each pass's indices are packed independently into uint8 bytes.

@@ -39,7 +39,7 @@ from turboquant_model.model import (
     save_quantized,
     load_quantized,
 )
-from turboquant_model.norm_codec import (
+from turboquant_model.norm_compression import (
     FactoredNorms,
     factorize_norms,
     reconstruct_norms,

@@ -24,8 +24,9 @@ class FactoredNorms:
     """Factored norm representation."""
     row_scale: torch.Tensor       # (M,) float16
     group_scale: torch.Tensor     # (G,) float16
-    residual_int8: torch.Tensor   # (M, G) int8
+    residual_int8: torch.Tensor   # (M, G) int8 or (M, G//2) uint8 (packed int4)
     residual_scale: float         # scalar for dequantizing residual
+    residual_bits: int = 8        # 8 for int8, 4 for packed int4
 
 
 def factorize_norms(norms: torch.Tensor) -> FactoredNorms:

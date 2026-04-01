@@ -11,7 +11,7 @@ const techniqueLinks = [
   { href: "/techniques/packing/", label: "4-bit Packing" },
   { href: "/techniques/fused-kernels/", label: "Fused Kernels" },
   { href: "/techniques/entropy-codec/", label: "Entropy Coding" },
-  { href: "/techniques/norm-codec/", label: "Norm Codec" },
+  { href: "/techniques/norm-compression/", label: "Norm Compression" },
   { href: "/techniques/qjl/", label: "QJL" },
 ];
 

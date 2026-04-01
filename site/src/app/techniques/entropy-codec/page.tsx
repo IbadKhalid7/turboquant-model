@@ -12,7 +12,7 @@ export default function EntropyCodecPage() {
       color="#f778ba"
       icon="🗜️"
       prev={{ href: "/techniques/fused-kernels/", label: "Fused GPU Kernels" }}
-      next={{ href: "/techniques/norm-codec/", label: "Norm Compression" }}
+      next={{ href: "/techniques/norm-compression/", label: "Norm Compression" }}
     >
       {/* ─── Which part of the BPW budget ─── */}
       <Section title="Where It Fits: The Index Term">
