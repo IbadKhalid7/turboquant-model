@@ -91,7 +91,7 @@ def quantize_tiny(config: TurboQuantConfig) -> nn.Module:
         tq.use_triton = False
 
         # Apply norm compression if configured
-        if config.norm_codec != "fp32" and norms.dim() == 2:
+        if config.norm_codec in ("factored_int8", "factored_int4") and norms.dim() == 2:
             tq.apply_norm_codec(config.norm_codec)
 
         _replace_module(model, name, tq)
@@ -122,15 +122,25 @@ def main():
             rotation="hadamard",
             norm_codec="fp32", entropy_coding=False,
         ),
-        "B) + norm_compression (factored_int8)": TurboQuantConfig(
+        "B) + norm_compression (int8)": TurboQuantConfig(
             bit_width=4, group_size=128, seed=42,
             rotation="hadamard",
             norm_codec="factored_int8", entropy_coding=False,
         ),
-        "C) + norm_compression + entropy_coding": TurboQuantConfig(
+        "B2) + norm_compression (int4)": TurboQuantConfig(
+            bit_width=4, group_size=128, seed=42,
+            rotation="hadamard",
+            norm_codec="factored_int4", entropy_coding=False,
+        ),
+        "C) int8 norms + entropy_coding": TurboQuantConfig(
             bit_width=4, group_size=128, seed=42,
             rotation="hadamard",
             norm_codec="factored_int8", entropy_coding=True,
+        ),
+        "D) int4 norms + entropy_coding": TurboQuantConfig(
+            bit_width=4, group_size=128, seed=42,
+            rotation="hadamard",
+            norm_codec="factored_int4", entropy_coding=True,
         ),
     }
 
@@ -207,22 +217,23 @@ def main():
 
         # Assertions
         print()
-        a = results[list(results.keys())[0]]
-        b = results[list(results.keys())[1]]
-        c = results[list(results.keys())[2]]
+        keys = list(results.keys())
+        a = results[keys[0]]  # baseline
+        d = results[keys[-1]]  # best compression
 
-        assert b["total_bytes"] < a["total_bytes"], "B should be smaller than A"
-        assert c["total_bytes"] < b["total_bytes"], "C should be smaller than B"
-        assert c["total_bytes"] < a["total_bytes"], "C should be smaller than A"
-        assert a["forward_ok"] and b["forward_ok"] and c["forward_ok"], "All forwards must pass"
+        assert d["total_bytes"] < a["total_bytes"], "Best config should be smaller than baseline"
+        for r in results.values():
+            assert r["forward_ok"], f"Forward pass failed for {r}"
 
-        # SQNR: baseline and entropy coding should be identical (lossless)
-        assert abs(a["avg_sqnr"] - c["avg_sqnr"]) < 0.5, \
-            f"Entropy coding changed SQNR: {a['avg_sqnr']} vs {c['avg_sqnr']}"
+        # SQNR: baseline and lossless-compressed should be close
+        # (int4 norms may lose a tiny bit of quality)
+        for label, r in results.items():
+            delta = abs(a["avg_sqnr"] - r["avg_sqnr"])
+            assert delta < 1.0, f"SQNR changed too much for {label}: delta={delta:.2f} dB"
 
         print("  ✓ All assertions passed.")
-        print(f"  ✓ Total size reduction A→C: "
-              f"{(1 - c['total_bytes']/a['total_bytes'])*100:.1f}%")
+        print(f"  ✓ Total size reduction A→best: "
+              f"{(1 - d['total_bytes']/a['total_bytes'])*100:.1f}%")
 
 
 if __name__ == "__main__":

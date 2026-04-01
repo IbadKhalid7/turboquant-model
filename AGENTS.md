@@ -3,4 +3,5 @@
 - Provide Complete, Self-Contained Code: When sharing code, deliver entire functions or full file contents without any placeholders or omissions. The code should be immediately usable and runnable, requiring no additional guesswork or completion from the user.
 - no backward compatibility in pre 1.0.0, design and implement the best options
 - Use uv as pyrhon package and venv managers if need python
+- for testing quantized model, put it under quantized_models folder
 - After completing any user request, use the #askQuestions tool to check if additional work is needed before ending your turn.

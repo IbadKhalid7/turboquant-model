@@ -323,7 +323,7 @@ def main():
                          default="different",
                          help="Rotation strategy for residual: different (default, best quality), "
                               "shared (enables merge_and_requantize), alternating (for multi-pass)")
-    p_quant.add_argument("--norm-codec", choices=["fp32", "fp16", "factored_int8"],
+    p_quant.add_argument("--norm-codec", choices=["fp32", "fp16", "factored_int8", "factored_int4"],
                          default="fp32", help="Norm compression method")
     p_quant.add_argument("--entropy-coding", action="store_true",
                          help="Enable rANS entropy coding of quantized indices")

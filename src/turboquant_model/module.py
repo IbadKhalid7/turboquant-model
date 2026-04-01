@@ -188,13 +188,14 @@ class TurboQuantLinear(nn.Module):
         """Apply norm compression (factorization + quantization).
 
         Args:
-            method: "fp16" or "factored_int8"
+            method: "fp16", "factored_int8", or "factored_int4"
         """
         norms = self.weight_norms
         if method == "fp16":
             self.weight_norms.copy_(norms.half().float())
-        elif method == "factored_int8":
-            self._factored_norms = factorize_norms(norms)
+        elif method in ("factored_int8", "factored_int4"):
+            residual_bits = 4 if method == "factored_int4" else 8
+            self._factored_norms = factorize_norms(norms, residual_bits=residual_bits)
             # Replace weight_norms with reconstructed (lossy) version
             reconstructed = reconstruct_norms(self._factored_norms)
             self.weight_norms.copy_(reconstructed)

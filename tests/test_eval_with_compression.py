@@ -83,7 +83,7 @@ def quantize_model_tiny(config):
         if module.bias is not None:
             tq.bias.copy_(module.bias.data)
 
-        if config.norm_codec == "factored_int8" and norms.dim() == 2:
+        if config.norm_codec in ("factored_int8", "factored_int4") and norms.dim() == 2:
             tq.apply_norm_codec(config.norm_codec)
 
         _replace_module(model, name, tq)
@@ -129,11 +129,14 @@ def load_from_tensors(tensors: dict, config: TurboQuantConfig, ref_model: nn.Mod
         norms_row_key = f"{safe}.norms.row_scale"
         norms_full_key = f"{safe}.norms"
         if norms_row_key in tensors:
+            res_bits_key = f"{safe}.norms.residual_bits"
+            res_bits = int(tensors[res_bits_key][0]) if res_bits_key in tensors else 8
             fn = FactoredNorms(
                 row_scale=tensors[f"{safe}.norms.row_scale"],
                 group_scale=tensors[f"{safe}.norms.group_scale"],
                 residual_int8=tensors[f"{safe}.norms.residual"],
                 residual_scale=float(tensors[f"{safe}.norms.residual_scale"][0]),
+                residual_bits=res_bits,
             )
             tq.weight_norms = reconstruct_norms(fn)
         elif norms_full_key in tensors:
@@ -162,17 +165,25 @@ def main():
             bit_width=4, group_size=128, seed=42, rotation="hadamard",
             norm_codec="fp32", entropy_coding=False,
         )),
-        ("Norm compression only", TurboQuantConfig(
+        ("Norm int8 only", TurboQuantConfig(
             bit_width=4, group_size=128, seed=42, rotation="hadamard",
             norm_codec="factored_int8", entropy_coding=False,
+        )),
+        ("Norm int4 only", TurboQuantConfig(
+            bit_width=4, group_size=128, seed=42, rotation="hadamard",
+            norm_codec="factored_int4", entropy_coding=False,
         )),
         ("Entropy coding only", TurboQuantConfig(
             bit_width=4, group_size=128, seed=42, rotation="hadamard",
             norm_codec="fp32", entropy_coding=True,
         )),
-        ("Both (norm + EC)", TurboQuantConfig(
+        ("Both int8 + EC", TurboQuantConfig(
             bit_width=4, group_size=128, seed=42, rotation="hadamard",
             norm_codec="factored_int8", entropy_coding=True,
+        )),
+        ("Both int4 + EC", TurboQuantConfig(
+            bit_width=4, group_size=128, seed=42, rotation="hadamard",
+            norm_codec="factored_int4", entropy_coding=True,
         )),
     ]
 
