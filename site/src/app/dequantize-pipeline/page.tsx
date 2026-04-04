@@ -123,6 +123,68 @@ output += bias                           `}<span className="text-accent-green">#
         </div>
       </Section>
 
+      <Section title="CPU Offload for Pass 2">
+        <p className="text-txt-2 leading-relaxed mb-4">
+          When GPU VRAM is limited, pass 2 (residual) data can be offloaded to CPU while pass 1
+          stays on GPU. This halves the on-GPU quantized weight footprint with ~10% latency
+          overhead from pipelined Host-to-Device copies.
+        </p>
+
+        <div className="bg-bg-2 border border-accent-blue/20 rounded-xl p-6 mb-6">
+          <h4 className="text-accent-blue font-semibold mb-3">Architecture</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-bg-3 border border-accent-green/30 rounded-lg p-4">
+              <p className="text-accent-green text-xs font-semibold uppercase mb-2">GPU (always resident)</p>
+              <ul className="text-sm text-txt-2 space-y-1">
+                <li>• Pass 1 data (indices, norms, codebook)</li>
+                <li>• SharedScratchPool (2 double-buffered slots)</li>
+                <li>• Embedding (bf16 or INT4/INT8)</li>
+                <li>• Activations / KV cache</li>
+              </ul>
+            </div>
+            <div className="bg-bg-3 border border-accent-purple/30 rounded-lg p-4">
+              <p className="text-accent-purple text-xs font-semibold uppercase mb-2">CPU (pinned memory)</p>
+              <ul className="text-sm text-txt-2 space-y-1">
+                <li>• Pass 2 data (indices, norms, codebook)</li>
+                <li>• Async H2D via copy_stream per layer</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-bg-2 border border-border rounded-xl p-6 mb-6">
+          <h4 className="text-accent font-semibold mb-3">Prefetch Chain (per layer)</h4>
+          <div className="space-y-3">
+            {[
+              { step: "1", label: "Fence", desc: "Record CUDA event on default stream, make copy_stream wait" },
+              { step: "2", label: "Async H2D", desc: "Copy next layer's pass2 data to alternate scratch slot via copy_stream" },
+              { step: "3", label: "Pass 1 compute", desc: "Runs on default stream (overlaps with H2D copy)" },
+              { step: "4", label: "Wait", desc: "Default stream waits for this layer's pass2 copy (started by previous layer)" },
+              { step: "5", label: "Pass 2 compute", desc: "Uses the scratch slot now populated with pass2 data" },
+            ].map((s) => (
+              <div key={s.step} className="flex items-start gap-3">
+                <span className="bg-accent/20 text-accent text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center shrink-0">{s.step}</span>
+                <div>
+                  <span className="text-accent-green font-medium text-sm">{s.label}</span>
+                  <span className="text-txt-2 text-sm ml-2">— {s.desc}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-bg-3 border border-border rounded-xl p-5 font-mono text-sm">
+          <pre className="text-txt-2">
+{`# Enable at quantization time
+config = TurboQuantConfig(..., cpu_offload_pass2=True)
+model  = quantize_model(model, config)
+
+`}<span className="text-accent-green"># Or override at load time</span>{`
+model = load_quantized(model_name, path, cpu_offload_pass2=True)`}
+          </pre>
+        </div>
+      </Section>
+
       <Section title="Memory Profile">
         <p className="text-txt-2 leading-relaxed mb-4">
           The pipeline never materializes the full M×N weight matrix. Peak additional memory:

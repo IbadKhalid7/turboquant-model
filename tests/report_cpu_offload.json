@@ -1,0 +1,43 @@
+[
+  {
+    "config": "bf16_baseline",
+    "ppl": 12.1635,
+    "kld": null,
+    "bpw": 16.0,
+    "vram_mb": 1459.1,
+    "vram_cpu_mb": 0.0,
+    "prefill_ms": 330.28,
+    "decode_ms_per_token": 56.66,
+    "total_gen_ms": 2143.54,
+    "generated_tokens": 32
+  },
+  {
+    "config": "4+4_residual_gpu",
+    "ppl": 12.1255,
+    "kld": 0.002036,
+    "bpw": 8.5003,
+    "vram_mb": 5750.0,
+    "vram_cpu_mb": 0.0,
+    "compressed_mb": 761.9,
+    "quant_time_s": 12.6,
+    "prefill_ms": 1160.14,
+    "decode_ms_per_token": 580.4,
+    "total_gen_ms": 19732.93,
+    "generated_tokens": 32
+  },
+  {
+    "config": "4+4_residual_cpu_offload",
+    "ppl": 12.1255,
+    "kld": 0.002036,
+    "bpw": 4.2501,
+    "vram_mb": 6400.3,
+    "vram_cpu_mb": 380.95,
+    "compressed_mb": 380.95,
+    "n_offloaded_layers": 187,
+    "quant_time_s": 7.9,
+    "prefill_ms": 1291.64,
+    "decode_ms_per_token": 656.57,
+    "total_gen_ms": 22301.86,
+    "generated_tokens": 32
+  }
+]

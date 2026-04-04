@@ -19,7 +19,7 @@ import torch.nn as nn
 from turboquant_model.codebook import get_codebook
 from turboquant_model.rotation import generate_rotation_matrix
 from turboquant_model.quantize import pack_4bit
-from turboquant_model.module import TurboQuantLinear
+from turboquant_model.module import TurboQuantLinear, SharedScratchPool, QuantizedEmbedding
 from turboquant_model.rotation import (
     generate_rotation_matrix,
     hadamard_rotate,
@@ -78,6 +78,11 @@ class TurboQuantConfig:
     # Advanced features
     norm_codec: str = "fp32"         # norm compression: "fp32", "fp16", "factored_int8"
     entropy_coding: bool = False     # rANS entropy coding of indices
+    cpu_offload_pass2: bool = False  # offload residual pass2 to CPU (pipelined H2D)
+
+    # Embedding quantization: "none", "int8" (per-row symmetric), "int4" (per-group Q4_K-style)
+    embedding_quant: str = "none"
+    embedding_group_size: int = 32   # group size for int4 mode
 
     def save(self, path: str | Path):
         with open(path, "w") as f:
@@ -194,6 +199,10 @@ def quantize_model(model: nn.Module, config: TurboQuantConfig) -> nn.Module:
                 seed=pass2_seed,
             )
 
+            # Offload pass2 to CPU if requested
+            if config.cpu_offload_pass2:
+                tq.offload_pass2_to_cpu()
+
         # Replace in model
         _replace_module(model, name, tq)
 
@@ -212,6 +221,42 @@ def quantize_model(model: nn.Module, config: TurboQuantConfig) -> nn.Module:
         f"{total_orig / 1024**2:.1f}MB → {total_compressed / 1024**2:.1f}MB "
         f"({compression_ratio} compression)"
     )
+
+    # Quantize embeddings if requested
+    if config.embedding_quant != "none":
+        emb_replaced = 0
+        emb_orig = 0
+        emb_compressed = 0
+        for name, module in list(model.named_modules()):
+            if not isinstance(module, nn.Embedding):
+                continue
+            V, D = module.weight.shape
+            qe = QuantizedEmbedding.from_float(
+                module, mode=config.embedding_quant, group_size=config.embedding_group_size,
+            )
+            _replace_module(model, name, qe)
+            emb_orig += V * D * 2  # bf16
+            emb_compressed += qe.memory_bytes()
+            emb_replaced += 1
+        if emb_replaced > 0:
+            ratio = f"{emb_orig / emb_compressed:.1f}x" if emb_compressed > 0 else "N/A"
+            logger.info(
+                f"Quantized {emb_replaced} embedding(s) ({config.embedding_quant}): "
+                f"{emb_orig / 1024**2:.1f}MB → {emb_compressed / 1024**2:.1f}MB "
+                f"({ratio} compression)"
+            )
+
+    # Clear caches populated during quantization (dequantize() for residual
+    # computation caches unpacked int32 indices that are 8× the packed size).
+    for module in model.modules():
+        if isinstance(module, TurboQuantLinear):
+            module._cached_indices = None
+            module._cached_pass2_indices = None
+            module._rotation_cache.clear()
+
+    # Set up next-layer prefetch chain if offloading
+    if config.cpu_offload_pass2:
+        enable_prefetch_chain(model)
 
     return model
 
@@ -523,9 +568,19 @@ def save_quantized(model: nn.Module, config: TurboQuantConfig, save_dir: str | P
                 tensors[f"{safe}.bias"] = module.bias.cpu().contiguous()
 
             if module.has_residual:
+                # Resolve pass2 tensors (may be CPU-offloaded or on GPU)
+                if module.is_pass2_offloaded:
+                    p2_indices = module._pass2_cpu_indices_packed
+                    p2_norms = module._pass2_cpu_weight_norms
+                    p2_codebook = module._pass2_cpu_codebook
+                else:
+                    p2_indices = module.pass2_indices_packed.cpu()
+                    p2_norms = module.pass2_weight_norms.cpu()
+                    p2_codebook = module.pass2_codebook.cpu()
+
                 if config.entropy_coding:
                     ec2 = _entropy_compress_indices(
-                        module.pass2_indices_packed.cpu(),
+                        p2_indices.cpu(),
                         config.residual_bit_width or config.bit_width,
                         module.in_features,
                     )
@@ -534,9 +589,9 @@ def save_quantized(model: nn.Module, config: TurboQuantConfig, save_dir: str | P
                         [module.out_features, module.in_features], dtype=torch.int32,
                     )
                 else:
-                    tensors[f"{safe}.pass2_indices"] = module.pass2_indices_packed.cpu().contiguous()
-                tensors[f"{safe}.pass2_norms"] = module.pass2_weight_norms.cpu().contiguous()
-                tensors[f"{safe}.pass2_codebook"] = module.pass2_codebook.cpu().clone()
+                    tensors[f"{safe}.pass2_indices"] = p2_indices.cpu().contiguous()
+                tensors[f"{safe}.pass2_norms"] = p2_norms.cpu().contiguous()
+                tensors[f"{safe}.pass2_codebook"] = p2_codebook.cpu().clone()
 
             if not codebook_saved:
                 tensors["codebook"] = module.codebook.cpu().clone()
@@ -544,18 +599,41 @@ def save_quantized(model: nn.Module, config: TurboQuantConfig, save_dir: str | P
 
             tq_param_prefixes.add(name + ".")
 
+    # Save quantized embeddings
+    qe_prefixes = set()
+    for name, module in model.named_modules():
+        if isinstance(module, QuantizedEmbedding):
+            safe = name.replace(".", "_")
+            tensors[f"{safe}.qe_mode"] = torch.tensor(
+                [ord(c) for c in module.mode], dtype=torch.uint8,
+            )
+            tensors[f"{safe}.qe_meta"] = torch.tensor(
+                [module.num_embeddings, module.embedding_dim, module.group_size,
+                 module.padding_idx if module.padding_idx is not None else -1],
+                dtype=torch.int64,
+            )
+            if module.mode == "int8":
+                tensors[f"{safe}.weight_int8"] = module.weight_int8.cpu().contiguous()
+                tensors[f"{safe}.weight_scale"] = module.weight_scale.cpu().contiguous()
+            elif module.mode == "int4":
+                tensors[f"{safe}.weight_packed"] = module.weight_packed.cpu().contiguous()
+                tensors[f"{safe}.weight_scale"] = module.weight_scale.cpu().contiguous()
+                tensors[f"{safe}.weight_min"] = module.weight_min.cpu().contiguous()
+            qe_prefixes.add(name + ".")
+
     save_file(tensors, save_dir / "model.safetensors")
 
     # Collect non-quantized parameters
+    all_quant_prefixes = tq_param_prefixes | qe_prefixes
     non_quantized = {}
     for pname, param in model.named_parameters():
-        is_tq = any(pname.startswith(prefix) for prefix in tq_param_prefixes)
-        if not is_tq:
+        is_quant = any(pname.startswith(prefix) for prefix in all_quant_prefixes)
+        if not is_quant:
             non_quantized[pname] = param.data.cpu().contiguous()
 
     for bname, buf in model.named_buffers():
-        is_tq = any(bname.startswith(prefix) for prefix in tq_param_prefixes)
-        if not is_tq and bname not in non_quantized:
+        is_quant = any(bname.startswith(prefix) for prefix in all_quant_prefixes)
+        if not is_quant and bname not in non_quantized:
             non_quantized[bname] = buf.cpu().contiguous()
 
     save_file(non_quantized, save_dir / "non_quantized.safetensors")
@@ -569,6 +647,7 @@ def load_quantized(
     model_name_or_path: str,
     quantized_dir: str | Path,
     device: str = "cuda",
+    cpu_offload_pass2: bool | None = None,
 ) -> nn.Module:
     """Load a pre-quantized model from disk.
 
@@ -579,6 +658,10 @@ def load_quantized(
         model_name_or_path: HF model name or path (for architecture)
         quantized_dir: directory with saved quantized weights
         device: target device
+        cpu_offload_pass2: Override CPU offload for pass2 residual weights.
+            ``None`` (default) uses the value from the saved config.
+            ``True`` forces offload on (reduces GPU VRAM).
+            ``False`` forces offload off (keeps everything on GPU).
 
     Returns:
         model with TurboQuantLinear modules, on-the-fly mode
@@ -587,6 +670,10 @@ def load_quantized(
 
     quantized_dir = Path(quantized_dir)
     config = TurboQuantConfig.load(quantized_dir / "turboquant_config.json")
+
+    # Override CPU offload setting if caller specified
+    if cpu_offload_pass2 is not None:
+        config.cpu_offload_pass2 = cpu_offload_pass2
 
     # Load architecture
     if (quantized_dir / "config.json").exists():
@@ -725,7 +812,39 @@ def load_quantized(
                     seed=config.residual_seed,
                 )
 
+        # Offload pass2 to CPU if requested
+        if config.cpu_offload_pass2 and tq.has_residual:
+            tq.offload_pass2_to_cpu()
+
         _replace_module(model, name, tq)
+
+    # Restore quantized embeddings
+    if use_safetensors:
+        for name, module in list(model.named_modules()):
+            if not isinstance(module, nn.Embedding):
+                continue
+            safe = name.replace(".", "_")
+            mode_key = f"{safe}.qe_mode"
+            if mode_key not in tensors:
+                continue
+            mode = "".join(chr(c) for c in tensors[mode_key].tolist())
+            meta = tensors[f"{safe}.qe_meta"]
+            V, D, gs = int(meta[0]), int(meta[1]), int(meta[2])
+            pad_idx = int(meta[3])
+            qe = QuantizedEmbedding(
+                num_embeddings=V, embedding_dim=D, mode=mode,
+                group_size=gs,
+                padding_idx=pad_idx if pad_idx >= 0 else None,
+                device=device,
+            )
+            if mode == "int8":
+                qe.weight_int8.copy_(tensors[f"{safe}.weight_int8"])
+                qe.weight_scale.copy_(tensors[f"{safe}.weight_scale"])
+            elif mode == "int4":
+                qe.weight_packed.copy_(tensors[f"{safe}.weight_packed"])
+                qe.weight_scale.copy_(tensors[f"{safe}.weight_scale"])
+                qe.weight_min.copy_(tensors[f"{safe}.weight_min"])
+            _replace_module(model, name, qe)
 
     # Load non-quantized parameters
     non_quantized_st = quantized_dir / "non_quantized.safetensors"
@@ -748,8 +867,152 @@ def load_quantized(
                 target.copy_(tensor)
 
     model.eval()
+
+    # Set up next-layer prefetch chain if offloading
+    if config.cpu_offload_pass2:
+        enable_prefetch_chain(model)
+
     logger.info(f"Loaded quantized model from {quantized_dir}")
     return model
+
+
+# ---------------------------------------------------------------------------
+# Prefetch chain for CPU-offloaded residual pass
+# ---------------------------------------------------------------------------
+
+
+def enable_prefetch_chain(model: nn.Module) -> int:
+    """Link offloaded TurboQuantLinear layers with shared double-buffered scratch.
+
+    Allocates a ``SharedScratchPool`` with two GPU scratch slots sized to the
+    largest offloaded layer, then assigns alternating slot indices (ping-pong)
+    so one slot is written by H2D while the other is consumed by a kernel.
+
+    Also links layers so each one's ``forward()`` starts an async H2D copy
+    of the *next* offloaded layer's pass2 data, overlapping the copy with
+    the current layer's kernel execution.
+
+    **Important:** The chain is built in *execution order*, not module-tree
+    order.  A single forward pass with dummy input is run to discover the
+    actual call sequence.  Module-tree (DFS) order can differ from execution
+    order in hybrid architectures (e.g. Qwen3.5 where ``out_proj`` appears
+    before ``in_proj_*`` in the tree but executes after them).
+
+    VRAM overhead: 2 × max_layer_pass2_size (constant, regardless of N layers).
+    Without this, no GPU scratch exists and offloaded layers fall back to
+    synchronous copy.
+
+    Call this after ``quantize_model`` or ``load_quantized`` with
+    ``cpu_offload_pass2=True``.
+
+    Args:
+        model: model with TurboQuantLinear modules (some offloaded)
+
+    Returns:
+        Number of links created (= offloaded_layers - 1, or 0 if < 2)
+    """
+    offloaded_set: set[int] = set()
+    for module in model.modules():
+        if isinstance(module, TurboQuantLinear) and module.is_pass2_offloaded:
+            offloaded_set.add(id(module))
+
+    if not offloaded_set:
+        return 0
+
+    # --- Discover execution order via a forward hook ---
+    exec_order: list[TurboQuantLinear] = []
+    seen_ids: set[int] = set()
+    hooks = []
+
+    def _record_hook(mod, _input, _output):
+        mid = id(mod)
+        if mid in offloaded_set and mid not in seen_ids:
+            exec_order.append(mod)
+            seen_ids.add(mid)
+
+    for module in model.modules():
+        if isinstance(module, TurboQuantLinear):
+            hooks.append(module.register_forward_hook(_record_hook))
+
+    # Dummy forward to discover order (using the model's own device)
+    device = next(model.parameters()).device
+    dummy = torch.zeros(1, 1, dtype=torch.long, device=device)
+    with torch.no_grad():
+        try:
+            model(dummy)
+        except Exception:
+            pass  # some models may error on length-1 input; order is still valid
+
+    for h in hooks:
+        h.remove()
+
+    # Clear caches populated during the dummy forward (avoids holding
+    # ~8× the packed indices as int32 in VRAM).
+    for module in model.modules():
+        if isinstance(module, TurboQuantLinear):
+            module._cached_indices = None
+            module._cached_pass2_indices = None
+            module._rotation_cache.clear()
+
+    offloaded = exec_order
+    if not offloaded:
+        # Fallback: use module-tree order
+        offloaded = [m for m in model.modules()
+                     if isinstance(m, TurboQuantLinear) and m.is_pass2_offloaded]
+
+    # Find device and max element counts across all offloaded layers
+    device = offloaded[0].indices_packed.device
+    max_idx_numel = 0
+    max_nrm_numel = 0
+    max_cb_numel = 0
+
+    for layer in offloaded:
+        cpu_idx = layer._pass2_cpu_indices_packed
+        cpu_nrm = layer._pass2_cpu_weight_norms
+        cpu_cb = layer._pass2_cpu_codebook
+        max_idx_numel = max(max_idx_numel, cpu_idx.numel())
+        max_nrm_numel = max(max_nrm_numel, cpu_nrm.numel())
+        max_cb_numel = max(max_cb_numel, cpu_cb.numel())
+
+    # Allocate shared double-buffered scratch pool (flat 1-D buffers)
+    pool = SharedScratchPool(max_idx_numel, max_nrm_numel, max_cb_numel, device)
+
+    # Share a single copy stream and scratch pool across all layers
+    shared_stream = offloaded[0]._copy_stream
+    if shared_stream is None:
+        shared_stream = torch.cuda.Stream(device=device)
+
+    for i, layer in enumerate(offloaded):
+        layer._copy_stream = shared_stream
+        layer._scratch_pool = pool
+        layer._scratch_idx = i % 2  # ping-pong
+
+    # Chain: layer[i] prefetches layer[i+1]
+    # Use object.__setattr__ to avoid nn.Module child-module registration,
+    # which would create a recursive chain visible to named_modules()/state_dict().
+    for i in range(len(offloaded) - 1):
+        object.__setattr__(offloaded[i], '_next_offloaded_layer', offloaded[i + 1])
+
+    # Last layer doesn't prefetch anyone
+    object.__setattr__(offloaded[-1], '_next_offloaded_layer', None)
+
+    pool_mb = pool.memory_bytes() / (1024 * 1024)
+    logger.info(
+        f"Prefetch chain: {len(offloaded)} offloaded layers, "
+        f"shared scratch pool {pool_mb:.1f} MB VRAM "
+        f"({len(offloaded) - 1} prefetch links)"
+    )
+    return len(offloaded) - 1
+
+
+def disable_prefetch_chain(model: nn.Module) -> None:
+    """Remove next-layer prefetch links and shared scratch from all layers."""
+    for module in model.modules():
+        if isinstance(module, TurboQuantLinear):
+            object.__setattr__(module, '_next_offloaded_layer', None)
+            module._prefetch_event = None
+            module._scratch_pool = None
+            module._scratch_idx = 0
 
 
 # ---------------------------------------------------------------------------

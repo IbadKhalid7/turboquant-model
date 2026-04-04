@@ -75,6 +75,7 @@ def cmd_quantize(args: argparse.Namespace):
         rotation_strategy=args.rotation_strategy,
         norm_codec=getattr(args, 'norm_codec', 'fp32') or 'fp32',
         entropy_coding=getattr(args, 'entropy_coding', False),
+        cpu_offload_pass2=getattr(args, 'cpu_offload_pass2', False),
     )
 
     logger.info(f"Quantizing: {config.bit_width}-bit"
@@ -112,8 +113,9 @@ def cmd_eval(args: argparse.Namespace):
 
     if args.quantized:
         from turboquant_model.model import load_quantized
+        offload = getattr(args, 'cpu_offload_pass2', None) or None
         logger.info(f"Loading quantized model from: {args.quantized}")
-        model = load_quantized(args.model, args.quantized, device=device)
+        model = load_quantized(args.model, args.quantized, device=device, cpu_offload_pass2=offload)
     else:
         from turboquant_model.model import TurboQuantConfig, quantize_model
         logger.info(f"Loading and quantizing model: {args.model}")
@@ -128,6 +130,7 @@ def cmd_eval(args: argparse.Namespace):
             residual_seed=args.residual_seed,
             rotation=args.rotation,
             rotation_strategy=getattr(args, "rotation_strategy", "different"),
+            cpu_offload_pass2=getattr(args, 'cpu_offload_pass2', False),
         )
         model = quantize_model(model, config)
 
@@ -204,7 +207,8 @@ def cmd_generate(args: argparse.Namespace):
 
     if args.quantized:
         from turboquant_model.model import load_quantized
-        model = load_quantized(args.model, args.quantized, device=device)
+        offload = getattr(args, 'cpu_offload_pass2', None) or None
+        model = load_quantized(args.model, args.quantized, device=device, cpu_offload_pass2=offload)
     else:
         from turboquant_model.model import TurboQuantConfig, quantize_model
         model = AutoModelForCausalLM.from_pretrained(
@@ -213,6 +217,7 @@ def cmd_generate(args: argparse.Namespace):
         config = TurboQuantConfig(
             bit_width=args.bit_width,
             residual_bit_width=args.residual_bit_width,
+            cpu_offload_pass2=getattr(args, 'cpu_offload_pass2', False),
         )
         model = quantize_model(model, config)
 
@@ -257,6 +262,7 @@ def cmd_benchmark(args: argparse.Namespace):
     config = TurboQuantConfig(
         bit_width=args.bit_width,
         residual_bit_width=args.residual_bit_width,
+        cpu_offload_pass2=getattr(args, 'cpu_offload_pass2', False),
     )
     model = quantize_model(model, config)
 
@@ -327,6 +333,8 @@ def main():
                          default="fp32", help="Norm compression method")
     p_quant.add_argument("--entropy-coding", action="store_true",
                          help="Enable rANS entropy coding of quantized indices")
+    p_quant.add_argument("--cpu-offload-pass2", action="store_true",
+                         help="Offload residual pass2 weights to CPU with pipelined H2D")
 
     # --- eval ---
     p_eval = subparsers.add_parser("eval", help="Evaluate PPL on WikiText-103")
@@ -346,6 +354,8 @@ def main():
     p_eval.add_argument("--rotation-strategy", choices=["different", "shared", "alternating"],
                         default="different",
                         help="Rotation strategy for residual passes")
+    p_eval.add_argument("--cpu-offload-pass2", action="store_true",
+                        help="Offload residual pass2 weights to CPU with pipelined H2D")
 
     # --- generate ---
     p_gen = subparsers.add_parser("generate", help="Generate text")
@@ -357,6 +367,8 @@ def main():
     p_gen.add_argument("--prompt", required=True)
     p_gen.add_argument("--max-tokens", type=int, default=64)
     p_gen.add_argument("--temperature", type=float, default=0.0)
+    p_gen.add_argument("--cpu-offload-pass2", action="store_true",
+                       help="Offload residual pass2 weights to CPU with pipelined H2D")
 
     # --- benchmark ---
     p_bench = subparsers.add_parser("benchmark", help="Benchmark memory and latency")
@@ -365,6 +377,8 @@ def main():
     p_bench.add_argument("--bit-width", type=int, default=4)
     p_bench.add_argument("--residual-bit-width", type=int, default=None)
     p_bench.add_argument("--n-iters", type=int, default=10)
+    p_bench.add_argument("--cpu-offload-pass2", action="store_true",
+                         help="Offload residual pass2 weights to CPU with pipelined H2D")
 
     args = parser.parse_args()
 

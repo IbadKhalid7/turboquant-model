@@ -13,6 +13,7 @@ const techniqueLinks = [
   { href: "/techniques/entropy-codec/", label: "Entropy Coding" },
   { href: "/techniques/norm-compression/", label: "Norm Compression" },
   { href: "/techniques/qjl/", label: "QJL" },
+  { href: "/techniques/cpu-offload/", label: "CPU Offload" },
 ];
 
 const topLinks = [

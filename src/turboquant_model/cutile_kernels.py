@@ -292,3 +292,149 @@ def cutile_fused_matmul_autotuned(
     )
 
     return output
+
+
+# ---------------------------------------------------------------------------
+# Dual-pass fused kernel: both residual passes in one launch
+# ---------------------------------------------------------------------------
+
+if _CUTILE_AVAILABLE:
+
+    @ct.kernel
+    def _turboquant_cutile_dual_kernel(
+        # Pass 1
+        input1_ptr,       # Array: (B, K)
+        indices1_ptr,     # Array: (N, PACKED_K) packed uint8
+        codebook1_ptr,    # Array: (N_LEVELS,) float32
+        norms1_ptr,       # Array: (N,) float32 — pre-scaled
+        # Pass 2
+        input2_ptr,       # Array: (B, K)
+        indices2_ptr,     # Array: (N, PACKED_K) packed uint8
+        codebook2_ptr,    # Array: (N_LEVELS,) float32
+        norms2_ptr,       # Array: (N,) float32 — pre-scaled
+        # Output
+        output_ptr,       # Array: (B, N)
+        TB: ConstInt,
+        TN: ConstInt,
+        TK: ConstInt,     # must be even
+        SAME_INPUT: ConstInt,  # 1 if input1==input2 (shared rotation)
+    ):
+        """Dual-pass fused 4-bit unpack → codebook → matmul → combine.
+
+        Each CTA computes a (TB, TN) output tile processing both passes,
+        writing output = acc1*norms1 + acc2*norms2 in a single store.
+        """
+        bid_b = ct.bid(0)
+        bid_n = ct.bid(1)
+
+        num_k_tiles = ct.num_tiles(input1_ptr, axis=1, shape=(TB, TK))
+        acc1 = ct.full((TB, TN), 0, dtype=ct.float32)
+        acc2 = ct.full((TB, TN), 0, dtype=ct.float32)
+        zero_pad = ct.PaddingMode.ZERO
+
+        mma_dtype = (
+            ct.tfloat32 if input1_ptr.dtype == ct.float32 else input1_ptr.dtype
+        )
+
+        rn = bid_n * TN + ct.arange(TN, dtype=ct.int32)
+
+        for k_tile in range(num_k_tiles):
+            k_start = k_tile * TK
+
+            # Shared index math
+            rk = ct.arange(TK, dtype=ct.int32)
+            k_global = k_start + rk
+            byte_col = k_global // 2
+            is_high = (k_global % 2) == 1
+
+            # ---- Pass 1 ----
+            inp1 = ct.load(
+                input1_ptr, index=(bid_b, k_tile),
+                shape=(TB, TK), padding_mode=zero_pad,
+            )
+            packed1 = ct.gather(indices1_ptr, (rn[:, None], byte_col[None, :]))
+            lo1 = ct.bitwise_and(packed1, 0x0F)
+            hi1 = ct.bitwise_and(ct.bitwise_rshift(packed1, 4), 0x0F)
+            idx1 = ct.where(is_high[None, :], hi1, lo1).astype(ct.int32)
+            w1 = ct.gather(codebook1_ptr, idx1)
+            acc1 = ct.mma(inp1.astype(mma_dtype), ct.transpose(w1).astype(mma_dtype), acc1)
+
+            # ---- Pass 2 ----
+            if SAME_INPUT == 1:
+                inp2 = inp1
+            else:
+                inp2 = ct.load(
+                    input2_ptr, index=(bid_b, k_tile),
+                    shape=(TB, TK), padding_mode=zero_pad,
+                )
+            packed2 = ct.gather(indices2_ptr, (rn[:, None], byte_col[None, :]))
+            lo2 = ct.bitwise_and(packed2, 0x0F)
+            hi2 = ct.bitwise_and(ct.bitwise_rshift(packed2, 4), 0x0F)
+            idx2 = ct.where(is_high[None, :], hi2, lo2).astype(ct.int32)
+            w2 = ct.gather(codebook2_ptr, idx2)
+            acc2 = ct.mma(inp2.astype(mma_dtype), ct.transpose(w2).astype(mma_dtype), acc2)
+
+        # Epilogue: combine both passes
+        n1 = ct.load(norms1_ptr, index=(bid_n,), shape=(TN,), padding_mode=zero_pad)
+        n2 = ct.load(norms2_ptr, index=(bid_n,), shape=(TN,), padding_mode=zero_pad)
+        result = acc1 * n1[None, :] + acc2 * n2[None, :]
+
+        ct.store(
+            output_ptr, index=(bid_b, bid_n),
+            tile=ct.astype(result, output_ptr.dtype),
+        )
+
+
+def cutile_fused_dual_matmul(
+    x_rot1: torch.Tensor,          # (B, K) pass 1
+    indices1_packed: torch.Tensor,  # (N, K//2) pass 1
+    codebook1: torch.Tensor,
+    norms1: torch.Tensor,
+    x_rot2: torch.Tensor,          # (B, K) pass 2
+    indices2_packed: torch.Tensor,  # (N, K//2) pass 2
+    codebook2: torch.Tensor,
+    norms2: torch.Tensor,
+    K: int,
+    scale: float | None = None,
+) -> torch.Tensor:
+    """Dual-pass fused dequant + matmul via cuTile.
+
+    Equivalent to:
+        cutile_fused_matmul(x_rot1, idx1, cb1, n1, K, scale)
+      + cutile_fused_matmul(x_rot2, idx2, cb2, n2, K, scale)
+
+    but with one kernel launch, one output write, and shared index math.
+    """
+    if not _CUTILE_AVAILABLE:
+        raise RuntimeError(
+            "cuda-tile is not installed. Install with: pip install cuda-tile[tileiras]"
+        )
+
+    B = x_rot1.shape[0]
+    N = indices1_packed.shape[0]
+    if scale is None:
+        scale = math.sqrt(K)
+
+    norms1_scaled = norms1 / scale
+    norms2_scaled = norms2 / scale
+    same_input = 1 if x_rot1.data_ptr() == x_rot2.data_ptr() else 0
+
+    output = torch.empty(B, N, dtype=torch.float32, device=x_rot1.device)
+
+    TB = min(32, _next_power_of_2(B))
+    TN = min(64, _next_power_of_2(N))
+    TK = min(64, _next_power_of_2(K))
+    TK = max(TK, 2)
+
+    grid = (ceil(B / TB), ceil(N / TN), 1)
+    ct.launch(
+        torch.cuda.current_stream(),
+        grid,
+        _turboquant_cutile_dual_kernel,
+        (
+            x_rot1, indices1_packed, codebook1, norms1_scaled,
+            x_rot2, indices2_packed, codebook2, norms2_scaled,
+            output, TB, TN, TK, same_input,
+        ),
+    )
+    return output

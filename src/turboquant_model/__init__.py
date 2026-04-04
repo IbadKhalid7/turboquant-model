@@ -31,13 +31,15 @@ from turboquant_model.residual import (
     merge_residual_passes,
     merge_and_requantize,
 )
-from turboquant_model.module import TurboQuantLinear
+from turboquant_model.module import TurboQuantLinear, SharedScratchPool, QuantizedEmbedding
 from turboquant_model.model import (
     TurboQuantConfig,
     quantize_model,
     quantize_model_advanced,
     save_quantized,
     load_quantized,
+    enable_prefetch_chain,
+    disable_prefetch_chain,
 )
 from turboquant_model.norm_compression import (
     FactoredNorms,
@@ -75,12 +77,15 @@ __all__ = [
     "merge_and_requantize",
     # Module
     "TurboQuantLinear",
+    "SharedScratchPool",
     # Model
     "TurboQuantConfig",
     "quantize_model",
     "quantize_model_advanced",
     "save_quantized",
     "load_quantized",
+    "enable_prefetch_chain",
+    "disable_prefetch_chain",
     # Norm codec
     "FactoredNorms",
     "factorize_norms",

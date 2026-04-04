@@ -159,6 +159,67 @@ def forward(self, x):
 
 Each pass uses its own indices, codebook, norms, and rotation seed. The cost is 2× rotations and 2× matmuls per group. To reduce this to 1×, use `merge_passes()` (see [Quantize Pipeline → Merging](quantize-pipeline.md#merging-multi-pass-to-single-pass)).
 
+## CPU Offload for Pass 2
+
+When GPU VRAM is limited, pass 2 (residual) data can be offloaded to CPU while pass 1 stays on GPU. This halves the on-GPU quantized weight footprint at the cost of ~10% latency overhead from pipelined Host-to-Device copies.
+
+### Architecture
+
+```
+┌────────────────────────────────────┐
+│               GPU                  │
+│                                    │
+│  Pass 1 data   (indices, norms)    │  ← always resident
+│  SharedScratchPool  (2 slots)      │  ← double-buffered dequant target
+│  Embedding      (bf16 or INT4)     │
+│  Activations / KV cache            │
+│                                    │
+├────────────────────────────────────┤
+│               CPU  (pinned)        │
+│                                    │
+│  Pass 2 data   (indices, norms)    │  ← offloaded, async H2D per layer
+│                                    │
+└────────────────────────────────────┘
+```
+
+### Prefetch Chain
+
+Layers are linked in **execution order** (discovered via forward hooks on a dummy pass, not the module tree's DFS order — critical for hybrid architectures like Qwen3.5 that interleave GatedDeltaNet and Attention blocks).
+
+Each layer's forward:
+1. **Fence** — record CUDA event on default stream, make `copy_stream` wait
+2. **Async H2D** — copy *next* layer's pass2 data to the alternate scratch slot via `copy_stream`
+3. **Pass 1 compute** — runs on default stream (overlaps with the H2D copy)
+4. **Wait** — default stream waits for *this* layer's pass2 copy (started by *previous* layer)
+5. **Pass 2 compute** — uses the scratch slot that's now populated
+
+The double-buffered scratch pool (ping-pong between slot 0 and slot 1) ensures one slot is being written while the other is being read.
+
+### Enabling Offload
+
+```python
+# At quantization time
+config = TurboQuantConfig(
+    ...,
+    cpu_offload_pass2=True,
+)
+model = quantize_model(model, config)
+
+# Or at load time (overrides saved config)
+model = load_quantized("Qwen/Qwen3.5-0.8B-Base", "./quantized", cpu_offload_pass2=True)
+
+# CLI
+turboquant eval --model Qwen/Qwen3.5-0.8B-Base --quantized ./q --cpu-offload-pass2
+```
+
+### VRAM Savings (Qwen3.5-0.8B, 4+4)
+
+| Mode | Static VRAM | Pass2 location |
+|------|-------------|----------------|
+| All GPU | 1,274 MB | GPU |
+| CPU offload (bf16 embed) | ~1,125 MB | CPU (pinned) |
+| CPU offload (INT4 embed) | ~792 MB | CPU (pinned) |
+
 ## Input Shape Handling
 
 `TurboQuantLinear.forward()` handles both 2D and 3D inputs:

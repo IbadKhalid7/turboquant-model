@@ -11,7 +11,7 @@ export default function QjlPage() {
       color="#d2a8ff"
       icon="📐"
       prev={{ href: "/techniques/norm-compression/", label: "Norm Compression" }}
-      next={{ href: "/quantize-pipeline/", label: "Quantize Pipeline" }}
+      next={{ href: "/techniques/cpu-offload/", label: "CPU Offload" }}
     >
       {/* ── THE TECHNIQUE ── */}
 
