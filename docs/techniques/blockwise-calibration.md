@@ -35,16 +35,18 @@ where:
 
 ### Parameterization
 
-Instead of directly optimizing $\alpha_m$, we parameterize the correction as a multiplicative scale:
+Instead of directly optimizing $\alpha_{m,g}$, we parameterize the correction as a multiplicative scale:
 
-$$\hat{\alpha}_m = \alpha_m \cdot \exp(\beta_m)$$
+$$\hat{\alpha}_{m,g} = \alpha_{m,g} \cdot \exp(\beta_{m,g})$$
 
-where $\beta_m \in \mathbb{R}$ is initialized to zero. This ensures:
+where $\beta_{m,g} \in \mathbb{R}$ is initialized to zero. This ensures:
 - The initial solution is the analytical norm (identity transform)
-- Positive-definiteness: $\hat{\alpha}_m > 0$ always
+- Positive-definiteness: $\hat{\alpha}_{m,g} > 0$ always
 - Smooth optimization landscape near the identity
 
-After optimization, the correction is folded: $\alpha_m \leftarrow \alpha_m \cdot \exp(\beta_m^*)$.
+By default, $\beta$ is **per-group** (shape $M \times G$), allowing each group's norm to be independently adjusted. This is critical: per-group correction recovers 2× more quality than per-row because different groups contribute differently to the output error.
+
+After optimization, the correction is folded: $\alpha_{m,g} \leftarrow \alpha_{m,g} \cdot \exp(\beta_{m,g}^*)$.
 
 ---
 
@@ -89,30 +91,32 @@ Output: Calibrated TQ model
 |--------|-----|-------------|-----|-------------|------|
 | Analytical norms (baseline) | 13.9564 | — | 0.130127 | — | — |
 | Per-layer calibration | 14.0220 | +0.0656 | 0.135156 | +0.005 | ~35 min |
-| **Blockwise (16s / 200i)** | **13.7079** | **−0.2485** | **0.116504** | **−0.0136** | 50.7 min |
-| **Blockwise (4s / 50i)** | **13.6971** | **−0.2592** | **0.117041** | **−0.0131** | **12.9 min** |
+| Blockwise per-row (4s / 50i) | 13.6971 | −0.2592 | 0.117041 | −0.0131 | 12.9 min |
+| **Blockwise per-group (4s / 50i)** | **13.4427** | **−0.5137** | **0.095947** | **−0.0342** | **14.0 min** |
 
 ### 4+4 Residual Quantization
 
 | Method | PPL | $\Delta$PPL | KLD | $\Delta$KLD |
 |--------|-----|-------------|-----|-------------|
 | Analytical norms | 12.1540 | — | 0.001887 | — |
-| Blockwise (16s / 200i) | 12.1540 | +0.0000 | 0.001912 | +0.000025 |
+| Blockwise per-row (16s / 200i) | 12.1540 | +0.0000 | 0.001912 | +0.000025 |
 
 **Key findings:**
-1. Blockwise calibration improves 4-bit PPL by **1.86%** and KLD by **10.1%**
-2. Per-layer calibration is **harmful** — it reduces per-layer MSE but increases end-to-end PPL
-3. 4+4 residual is already near-perfect ($\cos \approx 1.000$) and does not benefit from calibration
-4. 4 samples / 50 iterations achieves equal quality to 16 samples / 200 iterations in **3.9× less time**
+1. **Per-group** blockwise calibration improves 4-bit PPL by **3.68%** and KLD by **26.3%**
+2. Per-group is **2× better than per-row** at the same cost (different groups contribute differently to output error)
+3. Per-layer calibration is **harmful** — it reduces per-layer MSE but increases end-to-end PPL
+4. 4+4 residual is already near-perfect ($\cos \approx 1.000$) and does not benefit from calibration
+5. Recovers **28.1%** of the quantization gap (bf16 12.13 → 4-bit 13.96 → calibrated 13.44)
 
 ### Default Configuration
 
 Based on the above analysis, the default configuration is:
 - `n_samples = 4` (calibration sequences from WikiText-103)
 - `n_iters = 50` (AdamW optimization steps per block)
+- `per_group = True` (per-group alpha correction)
 - `lr = 1e-3`, `lambda = 1.0`
 
-This adds approximately **13 minutes** to the quantization pipeline for a 0.8B model and recovers ~14% of the quantization gap.
+This adds approximately **14 minutes** to the quantization pipeline for a 0.8B model and recovers ~28% of the quantization gap.
 
 ---
 

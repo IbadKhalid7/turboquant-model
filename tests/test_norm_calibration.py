@@ -92,6 +92,7 @@ def run_config(
     n_cal_samples, n_chunks, seq_length,
     n_iters=200,
     blockwise=False,
+    per_group=False,
 ):
     """Quantize, measure baseline, calibrate, measure again."""
     from turboquant_model.model import TurboQuantConfig, quantize_model
@@ -134,6 +135,7 @@ def run_config(
         lr=1e-3,
         n_iters=n_iters,
         batch_size=64,
+        per_group=per_group,
     )
     t0 = time.time()
     if blockwise:
@@ -202,6 +204,8 @@ def main():
     parser.add_argument("--output", type=str, default="tests/report_norm_calibration.json")
     parser.add_argument("--blockwise", action="store_true",
                         help="Use block-wise end-to-end calibration instead of per-layer")
+    parser.add_argument("--per-group", action="store_true",
+                        help="Per-group alpha (M,G) instead of per-row alpha (M,)")
     parser.add_argument("--only-4bit", action="store_true",
                         help="Only run 4-bit config (skip 4+4)")
     args = parser.parse_args()
@@ -217,7 +221,10 @@ def main():
     print(f"Device: {device}")
     print(f"Calibration samples: {args.n_cal_samples}")
     print(f"Eval chunks: {args.n_chunks}")
-    print(f"Calibration mode: {'blockwise' if args.blockwise else 'per-layer'}")
+    mode = 'blockwise' if args.blockwise else 'per-layer'
+    if args.per_group:
+        mode += '+per-group'
+    print(f"Calibration mode: {mode}")
 
     # Load reference model once
     print("\nLoading reference model...")
@@ -251,6 +258,7 @@ def main():
             seq_length=args.seq_length,
             n_iters=args.n_iters,
             blockwise=args.blockwise,
+            per_group=args.per_group,
         )
         results["configs"].append(r)
 

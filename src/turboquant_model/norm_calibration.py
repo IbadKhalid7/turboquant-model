@@ -225,6 +225,7 @@ class CalibrationConfig:
     lr: float = 1e-3
     n_iters: int = 50
     batch_size: int = 64
+    per_group: bool = True  # per-group alpha (M,G) vs per-row alpha (M,)
 
 
 def collect_calibration_data(
@@ -407,22 +408,31 @@ def _find_decoder_blocks(model: nn.Module):
 
 
 def _fold_alpha(layer: TurboQuantLinear, alpha: torch.Tensor) -> None:
-    """Fold alpha scaling into stored norms."""
+    """Fold alpha scaling into stored norms.
+
+    alpha can be (M,) for per-row or (M, G) for per-group.
+    """
     bad = alpha.isnan() | alpha.isinf()
     if bad.any():
         alpha[bad] = 1.0
         logger.warning(f"Reset {bad.sum().item()} NaN/inf alpha values")
-    if layer.weight_norms.dim() == 1:
+    if alpha.dim() == layer.weight_norms.dim():
+        # Per-group alpha matches norms shape exactly
+        layer.weight_norms.data *= alpha
+    elif layer.weight_norms.dim() == 1:
         layer.weight_norms.data *= alpha
     else:
+        # Per-row alpha (M,) with per-group norms (M, G)
         layer.weight_norms.data *= alpha.unsqueeze(1)
     if layer.has_residual:
         p2 = getattr(layer, "pass2_weight_norms", None)
         if p2 is not None:
-            if p2.dim() == 1:
+            if alpha.dim() == p2.dim():
                 p2.data *= alpha
+            elif p2.dim() == 1:
+                p2.data *= alpha if alpha.dim() == 1 else alpha.mean(dim=1)
             else:
-                p2.data *= alpha.unsqueeze(1)
+                p2.data *= alpha.unsqueeze(1) if alpha.dim() == 1 else alpha
 
 
 def calibrate_norms_blockwise(
@@ -577,11 +587,20 @@ def calibrate_norms_blockwise(
             continue
 
         log_alphas: dict[str, torch.Tensor] = {}
+        orig_norms: dict[str, torch.Tensor] = {}
         for name, layer in tq_linears.items():
-            log_alphas[name] = torch.zeros(
-                layer.out_features, device=device,
-                dtype=torch.float32, requires_grad=True,
-            )
+            if config.per_group and layer.weight_norms.dim() == 2:
+                # Per-group alpha: (M, G)
+                log_alphas[name] = torch.zeros_like(
+                    layer.weight_norms, dtype=torch.float32, requires_grad=True,
+                )
+                orig_norms[name] = layer.weight_norms.data.clone()
+            else:
+                # Per-row alpha: (M,)
+                log_alphas[name] = torch.zeros(
+                    layer.out_features, device=device,
+                    dtype=torch.float32, requires_grad=True,
+                )
 
         # ---- Patch TQ linear forwards with alpha scaling ----
         # Disable fused kernels in this block for gradient flow
@@ -594,15 +613,28 @@ def calibrate_norms_blockwise(
         for name, layer in tq_linears.items():
             saved_forwards[name] = layer.forward
 
-            def _make_patched(orig_fn, alpha_param):
-                def _patched(x):
-                    y = orig_fn(x)
-                    # Cast back to input dtype (bf16) so downstream ops
-                    # (conv1d, layernorm) don't hit dtype mismatches.
-                    return (y * alpha_param.exp()[None, :]).to(x.dtype)
-                return _patched
+            if name in orig_norms:
+                # Per-group: inject alpha into weight_norms before forward
+                def _make_patched_pg(orig_fn, alpha_param, lyr, on):
+                    def _patched(x):
+                        # Replace norms with alpha-scaled version (differentiable)
+                        lyr.weight_norms = on * alpha_param.exp()
+                        y = orig_fn(x)
+                        return y.to(x.dtype)
+                    return _patched
 
-            layer.forward = _make_patched(layer.forward, log_alphas[name])
+                layer.forward = _make_patched_pg(
+                    layer.forward, log_alphas[name], layer, orig_norms[name],
+                )
+            else:
+                # Per-row: scale output (original approach)
+                def _make_patched(orig_fn, alpha_param):
+                    def _patched(x):
+                        y = orig_fn(x)
+                        return (y * alpha_param.exp()[None, :]).to(x.dtype)
+                    return _patched
+
+                layer.forward = _make_patched(layer.forward, log_alphas[name])
 
         # ---- Optimize ----
         # Use a small subset of samples for the gradient loop to limit
@@ -666,6 +698,9 @@ def calibrate_norms_blockwise(
         for name, layer in tq_linears.items():
             layer.forward = saved_forwards[name]
             alpha = log_alphas[name].detach().exp()
+            # Restore original norms buffer if per-group patching replaced it
+            if name in orig_norms:
+                layer.weight_norms = orig_norms[name]
             _fold_alpha(layer, alpha)
         for layer, cutile, triton, metal in block_saved_flags:
             layer.use_cutile = cutile

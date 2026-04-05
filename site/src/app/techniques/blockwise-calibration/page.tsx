@@ -8,7 +8,7 @@ export default function BlockwiseCalibrationPage() {
   return (
     <TechniqueLayout
       title="Block-wise Calibration"
-      subtitle="Fine-tune per-row norms through each transformer block to minimize end-to-end reconstruction error — recovering ~14% of the quantization gap."
+      subtitle="Fine-tune per-group norms through each transformer block to minimize end-to-end reconstruction error — recovering ~28% of the quantization gap."
       color="#f0883e"
       icon="🎯"
       prev={{ href: "/techniques/norm-compression/", label: "Norm Compression" }}
@@ -74,13 +74,13 @@ export default function BlockwiseCalibrationPage() {
       </Section>
 
       {/* ─── Parameterization ─── */}
-      <Section title="Exponential Parameterization">
+      <Section title="Per-Group Exponential Parameterization">
         <p className="text-txt-2 leading-relaxed mb-4">
-          Instead of optimizing <Math expr="\alpha_m" /> directly, we use a multiplicative correction:
+          Instead of optimizing <Math expr="\alpha_{m,g}" /> directly, we use a per-group multiplicative correction:
         </p>
         <div className="bg-bg-2 border border-border rounded-xl p-6 text-center mb-4">
           <Math
-            expr="\hat{\alpha}_m = \alpha_m \cdot \exp(\beta_m), \quad \beta_m \in \mathbb{R}, \quad \beta_m^{(0)} = 0"
+            expr="\hat{\alpha}_{m,g} = \alpha_{m,g} \cdot \exp(\beta_{m,g}), \quad \beta_{m,g} \in \mathbb{R}, \quad \beta_{m,g}^{(0)} = 0"
             display
           />
         </div>
@@ -93,14 +93,14 @@ export default function BlockwiseCalibrationPage() {
           </Reveal>
           <Reveal delay={0.05}>
             <div className="bg-bg-2 border border-border rounded-xl p-4">
-              <h4 className="font-semibold text-xs mb-1 text-accent-green">Always positive</h4>
-              <p className="text-[11px] text-txt-2"><Math expr="\exp(\beta) > 0" /> for all <Math expr="\beta" />, ensuring valid norms.</p>
+              <h4 className="font-semibold text-xs mb-1 text-accent-green">Per-group granularity</h4>
+              <p className="text-[11px] text-txt-2">Each group&apos;s norm is independently adjusted — 2× better than per-row.</p>
             </div>
           </Reveal>
           <Reveal delay={0.1}>
             <div className="bg-bg-2 border border-border rounded-xl p-4">
-              <h4 className="font-semibold text-xs mb-1 text-accent-green">Smooth landscape</h4>
-              <p className="text-[11px] text-txt-2">Multiplicative perturbation avoids scale sensitivity near zero.</p>
+              <h4 className="font-semibold text-xs mb-1 text-accent-green">Always positive</h4>
+              <p className="text-[11px] text-txt-2"><Math expr="\exp(\beta) > 0" /> for all <Math expr="\beta" />, ensuring valid norms.</p>
             </div>
           </Reveal>
         </div>
@@ -188,37 +188,37 @@ export default function BlockwiseCalibrationPage() {
                 <td className="py-3 px-4 font-mono text-red-400">+0.005</td>
                 <td className="py-3 px-4 font-mono">~35 min</td>
               </tr>
-              <tr className="border-b border-border bg-[#f0883e]/5">
-                <td className="py-3 px-4 text-[#f0883e] font-semibold">Blockwise (4s / 50i) ✨</td>
-                <td className="py-3 px-4 font-mono font-semibold">13.6971</td>
-                <td className="py-3 px-4 font-mono text-accent-green font-semibold">−0.259</td>
-                <td className="py-3 px-4 font-mono font-semibold">0.1170</td>
-                <td className="py-3 px-4 font-mono text-accent-green font-semibold">−0.013</td>
-                <td className="py-3 px-4 font-mono font-semibold">12.9 min</td>
+              <tr className="border-b border-border">
+                <td className="py-3 px-4">Per-row blockwise (4s/50i)</td>
+                <td className="py-3 px-4 font-mono">13.6971</td>
+                <td className="py-3 px-4 font-mono text-accent-green">−0.259</td>
+                <td className="py-3 px-4 font-mono">0.1170</td>
+                <td className="py-3 px-4 font-mono text-accent-green">−0.013</td>
+                <td className="py-3 px-4 font-mono">12.9 min</td>
               </tr>
-              <tr className="border-b border-border bg-[#f0883e]/3">
-                <td className="py-3 px-4 text-[#f0883e]">Blockwise (16s / 200i)</td>
-                <td className="py-3 px-4 font-mono">13.7079</td>
-                <td className="py-3 px-4 font-mono text-accent-green">−0.249</td>
-                <td className="py-3 px-4 font-mono">0.1165</td>
-                <td className="py-3 px-4 font-mono text-accent-green">−0.014</td>
-                <td className="py-3 px-4 font-mono">50.7 min</td>
+              <tr className="border-b border-border bg-[#f0883e]/5">
+                <td className="py-3 px-4 text-[#f0883e] font-semibold">Per-group blockwise (4s/50i) ✨</td>
+                <td className="py-3 px-4 font-mono font-semibold">13.4427</td>
+                <td className="py-3 px-4 font-mono text-accent-green font-semibold">−0.514</td>
+                <td className="py-3 px-4 font-mono font-semibold">0.0959</td>
+                <td className="py-3 px-4 font-mono text-accent-green font-semibold">−0.034</td>
+                <td className="py-3 px-4 font-mono font-semibold">14.0 min</td>
               </tr>
             </tbody>
           </table>
         </div>
         <p className="text-txt-2 leading-relaxed text-sm mb-2">
           bf16 baseline PPL: <strong className="text-txt">12.1303</strong>.
-          The quantization gap is <Math expr="13.9564 - 12.1303 = 1.826" />. Blockwise calibration
-          recovers <strong className="text-txt">14.2%</strong> of that gap.
+          The quantization gap is <Math expr="13.9564 - 12.1303 = 1.826" />. Per-group blockwise calibration
+          recovers <strong className="text-txt">28.1%</strong> of that gap.
         </p>
         <Reveal>
           <div className="bg-accent-green/5 border border-accent-green/20 rounded-xl p-5">
-            <h4 className="font-semibold text-sm text-accent-green mb-2">4 samples, 50 iters is optimal</h4>
+            <h4 className="font-semibold text-sm text-accent-green mb-2">Per-group is 2× better than per-row</h4>
             <p className="text-xs text-txt-2 leading-relaxed">
-              Surprisingly, fewer samples avoid overfitting to the calibration set while still capturing
-              the block-level error structure. The 4× faster configuration achieves equal or
-              slightly better quality than the heavy setting.
+              Different groups contribute unequally to output error. Per-group correction
+              (M×G parameters) captures this structure while per-row (M parameters) applies
+              a uniform scaling. The extra parameters cost only 8% more time.
             </p>
           </div>
         </Reveal>
