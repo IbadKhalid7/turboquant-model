@@ -273,18 +273,18 @@ class TestBPW:
     """compute_bpw returns expected values."""
 
     def test_0_8B_model(self):
-        """For 0.8B params, the paper claims ~0.83 bpw."""
+        """For 0.8B params, BPW should be near 1.0 (table + stats + norms)."""
         total_weights = 800_000_000
         bpw = compute_bpw(
             total_weights=total_weights,
-            table_size=262_144,
+            table_size=262_147,
             group_size=128,
         )
-        # Table: 262144 * 128 * 16 = ~537M bits = 0.67 bpw
+        # Table: 262147 * 128 * 16 = ~537M bits ≈ 0.67 bpw
         # Stats: (800M / 128) * 16 = ~100M bits = 0.125 bpw
         # Norms: (800M / 128) * 32 = ~200M bits = 0.25 bpw
-        # Total ≈ 1.05 bpw (actual will vary based on exact arithmetic)
-        assert 0.5 < bpw < 2.0, f"BPW out of expected range: {bpw}"
+        # Total ≈ 1.05 bpw
+        assert 0.8 < bpw < 1.3, f"BPW out of expected range: {bpw}"
 
     def test_scales_inversely_with_model_size(self):
         """Larger models have lower amortised table cost."""
@@ -296,12 +296,16 @@ class TestBPW:
         """Stats overhead alone should be 0.125 bpw (16 bits / 128 weights)."""
         # Isolate stats contribution: large model so table cost is negligible
         total_weights = 10_000_000_000
-        bpw = compute_bpw(total_weights, table_size=1, group_size=128)
+        stats_bits_per_group = 16   # 8-bit μ + 8-bit σ
+        norm_bits_per_group = 32    # fp32 norm
+        group_size = 128
+        table_entry_bits = 16       # fp16 per element
+        bpw = compute_bpw(total_weights, table_size=1, group_size=group_size)
         # With table_size=1: table cost ≈ 0, stats = 0.125, norms = 0.25
-        # Total ≈ 0.375
-        expected_stats_overhead = 16.0 / 128.0  # 0.125
-        expected_norm_overhead = 32.0 / 128.0    # 0.25
-        assert abs(bpw - (expected_stats_overhead + expected_norm_overhead + 16 / total_weights)) < 0.001
+        expected_stats_overhead = stats_bits_per_group / group_size   # 0.125
+        expected_norm_overhead = norm_bits_per_group / group_size     # 0.25
+        table_overhead = 1 * group_size * table_entry_bits / total_weights
+        assert abs(bpw - (expected_stats_overhead + expected_norm_overhead + table_overhead)) < 0.001
 
 
 # ---------------------------------------------------------------------------

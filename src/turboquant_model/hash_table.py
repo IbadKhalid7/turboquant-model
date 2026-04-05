@@ -31,7 +31,7 @@ from turboquant_model.rotation import (
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_TABLE_SIZE: int = 262_144  # prime-ish near 2^18
+DEFAULT_TABLE_SIZE: int = 262_147  # prime near 2^18
 DEFAULT_GROUP_SIZE: int = 128
 DEFAULT_NUM_HEADS: int = 4
 
