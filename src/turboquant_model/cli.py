@@ -25,6 +25,7 @@ import argparse
 import logging
 import sys
 import time
+from pathlib import Path
 
 import torch
 
@@ -91,6 +92,29 @@ def cmd_quantize(args: argparse.Namespace):
         _disable_fused_kernels(model)
     elif device == "mps":
         _disable_fused_kernels(model)  # keep Metal
+
+    # Norm calibration (requires the fp model as reference)
+    if getattr(args, 'calibrate', False):
+        from turboquant_model.norm_calibration import calibrate_norms_blockwise, CalibrationConfig
+
+        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+        logger.info("Loading reference model for norm calibration...")
+        fp_model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=dtype, trust_remote_code=True
+        ).to(device).eval()
+
+        cal_config = CalibrationConfig(
+            n_samples=getattr(args, 'calibrate_samples', 4),
+            lam=getattr(args, 'calibrate_lambda', 1.0),
+            lr=getattr(args, 'calibrate_lr', 1e-3),
+            n_iters=getattr(args, 'calibrate_iters', 50),
+        )
+        logger.info(f"Running blockwise norm calibration ({cal_config.n_samples} samples, "
+                    f"{cal_config.n_iters} iters, lambda={cal_config.lam})")
+        calibrate_norms_blockwise(model, fp_model, tokenizer, device=device, config=cal_config)
+        del fp_model
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
     logger.info(f"Saving to: {args.output}")
     save_quantized(model, config, args.output)
@@ -245,6 +269,66 @@ def cmd_generate(args: argparse.Namespace):
     logger.info(f"Generated {n_tokens} tokens in {elapsed:.1f}s ({n_tokens/elapsed:.1f} tok/s)")
 
 
+def cmd_calibrate(args: argparse.Namespace):
+    """Calibrate norms of a saved quantized model (post-hoc)."""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from turboquant_model.model import load_quantized, save_quantized, TurboQuantConfig
+    from turboquant_model.norm_calibration import calibrate_norms_blockwise, CalibrationConfig
+
+    device = args.device or _auto_device()
+    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+
+    logger.info(f"Loading quantized model from: {args.quantized}")
+    model = load_quantized(args.model, args.quantized, device=device)
+
+    if device in ("cpu", "mps"):
+        _disable_fused_kernels(model)
+
+    logger.info(f"Loading reference model: {args.model}")
+    fp_model = AutoModelForCausalLM.from_pretrained(
+        args.model, dtype=dtype, trust_remote_code=True
+    ).to(device).eval()
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+
+    cal_config = CalibrationConfig(
+        n_samples=args.n_samples,
+        seq_length=args.seq_length,
+        lam=args.lam,
+        lr=args.lr,
+        n_iters=args.n_iters,
+        batch_size=args.batch_size,
+    )
+    logger.info(f"Calibrating norms blockwise ({cal_config.n_samples} samples, "
+                f"{cal_config.n_iters} iters, lambda={cal_config.lam})")
+    results = calibrate_norms_blockwise(model, fp_model, tokenizer, device=device, config=cal_config)
+
+    # Print summary
+    avg_mse_before = sum(r["before_mse"] for r in results) / len(results)
+    avg_mse_after = sum(r["after_mse"] for r in results) / len(results)
+    avg_cos_before = sum(r["before_cos"] for r in results) / len(results)
+    avg_cos_after = sum(r["after_cos"] for r in results) / len(results)
+    print(f"\nCalibrated {len(results)} layers:")
+    print(f"  Avg MSE:    {avg_mse_before:.6f} -> {avg_mse_after:.6f}")
+    print(f"  Avg cos_sim: {avg_cos_before:.6f} -> {avg_cos_after:.6f}")
+
+    # Save if output specified
+    output = getattr(args, 'output', None)
+    if output:
+        config = TurboQuantConfig.load(
+            Path(args.quantized) / "turboquant_config.json"
+        )
+        save_quantized(model, config, output)
+        logger.info(f"Saved calibrated model to: {output}")
+    else:
+        # Overwrite in-place
+        config = TurboQuantConfig.load(
+            Path(args.quantized) / "turboquant_config.json"
+        )
+        save_quantized(model, config, args.quantized)
+        logger.info(f"Saved calibrated model to: {args.quantized} (overwritten)")
+
+
 def cmd_benchmark(args: argparse.Namespace):
     """Benchmark memory and latency."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -335,6 +419,16 @@ def main():
                          help="Enable rANS entropy coding of quantized indices")
     p_quant.add_argument("--cpu-offload-pass2", action="store_true",
                          help="Offload residual pass2 weights to CPU with pipelined H2D")
+    p_quant.add_argument("--calibrate", action="store_true",
+                         help="Run norm calibration after quantization (requires fp model in memory)")
+    p_quant.add_argument("--calibrate-samples", type=int, default=4,
+                         help="Number of calibration sequences")
+    p_quant.add_argument("--calibrate-lambda", type=float, default=1.0,
+                         help="Lambda weight for angular+KLD loss in calibration")
+    p_quant.add_argument("--calibrate-lr", type=float, default=1e-3,
+                         help="Learning rate for norm calibration")
+    p_quant.add_argument("--calibrate-iters", type=int, default=50,
+                         help="Number of optimisation iterations per block")
 
     # --- eval ---
     p_eval = subparsers.add_parser("eval", help="Evaluate PPL on WikiText-103")
@@ -380,6 +474,19 @@ def main():
     p_bench.add_argument("--cpu-offload-pass2", action="store_true",
                          help="Offload residual pass2 weights to CPU with pipelined H2D")
 
+    # --- calibrate ---
+    p_cal = subparsers.add_parser("calibrate", help="Calibrate norms of a saved quantized model")
+    p_cal.add_argument("--model", required=True, help="HF model name or path (reference)")
+    p_cal.add_argument("--quantized", required=True, help="Quantized model directory")
+    p_cal.add_argument("--output", default=None, help="Output dir (default: overwrite quantized)")
+    p_cal.add_argument("--device", default=None, help="Device: cuda, mps, or cpu (auto-detected)")
+    p_cal.add_argument("--n-samples", type=int, default=4, help="Number of calibration sequences")
+    p_cal.add_argument("--seq-length", type=int, default=2048, help="Sequence length")
+    p_cal.add_argument("--lam", type=float, default=1.0, help="Lambda for angular+KLD loss")
+    p_cal.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    p_cal.add_argument("--n-iters", type=int, default=50, help="Iterations per block")
+    p_cal.add_argument("--batch-size", type=int, default=64, help="Mini-batch size")
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -392,6 +499,7 @@ def main():
         "eval": cmd_eval,
         "generate": cmd_generate,
         "benchmark": cmd_benchmark,
+        "calibrate": cmd_calibrate,
     }
     commands[args.command](args)
 

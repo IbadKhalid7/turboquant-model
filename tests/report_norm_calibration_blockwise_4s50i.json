@@ -1,0 +1,27 @@
+{
+  "model": "Qwen/Qwen3.5-0.8B-Base",
+  "bf16_ppl": 12.130259609572297,
+  "configs": [
+    {
+      "config": "4-bit",
+      "bit_width": 4,
+      "residual_bit_width": null,
+      "baseline": {
+        "ppl": 13.956390447944582,
+        "kld": 0.130126953125
+      },
+      "calibrated": {
+        "ppl": 13.697146137460072,
+        "kld": 0.117041015625
+      },
+      "ppl_delta": -0.2592443104845099,
+      "kld_delta": -0.013085937500000006,
+      "calibration_time_s": 771.018926858902,
+      "n_layers_calibrated": 25,
+      "avg_mse_before": 0.0030617187917232514,
+      "avg_mse_after": 0.0024962256848812103,
+      "avg_cos_before": 0.9817371797561646,
+      "avg_cos_after": 0.9831695127487182
+    }
+  ]
+}

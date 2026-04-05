@@ -12,7 +12,7 @@ export default function NormCodecPage() {
       color="#79c0ff"
       icon="📐"
       prev={{ href: "/techniques/entropy-codec/", label: "Entropy Coding" }}
-      next={{ href: "/techniques/qjl/", label: "QJL" }}
+      next={{ href: "/techniques/blockwise-calibration/", label: "Block-wise Calibration" }}
     >
       {/* ─── Which part of the BPW budget ─── */}
       <Section title="Where It Fits: The Norm Term">

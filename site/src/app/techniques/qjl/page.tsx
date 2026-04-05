@@ -10,7 +10,7 @@ export default function QjlPage() {
       subtitle="A 1-bit random projection technique for unbiased inner product estimation — elegant for KV-cache attention, but not the right tool for offline weight compression."
       color="#d2a8ff"
       icon="📐"
-      prev={{ href: "/techniques/norm-compression/", label: "Norm Compression" }}
+      prev={{ href: "/techniques/blockwise-calibration/", label: "Block-wise Calibration" }}
       next={{ href: "/techniques/cpu-offload/", label: "CPU Offload" }}
     >
       {/* ── THE TECHNIQUE ── */}

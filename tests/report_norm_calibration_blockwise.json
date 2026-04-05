@@ -1,0 +1,48 @@
+{
+  "model": "Qwen/Qwen3.5-0.8B-Base",
+  "bf16_ppl": 12.130259609572297,
+  "configs": [
+    {
+      "config": "4-bit",
+      "bit_width": 4,
+      "residual_bit_width": null,
+      "baseline": {
+        "ppl": 13.956390447944582,
+        "kld": 0.130126953125
+      },
+      "calibrated": {
+        "ppl": 13.707851214006002,
+        "kld": 0.11650390625
+      },
+      "ppl_delta": -0.24853923393857968,
+      "kld_delta": -0.013623046875000003,
+      "calibration_time_s": 3039.4027671813965,
+      "n_layers_calibrated": 25,
+      "avg_mse_before": 0.003510794937610626,
+      "avg_mse_after": 0.0027370747923851015,
+      "avg_cos_before": 0.9810052061080933,
+      "avg_cos_after": 0.9819629859924316
+    },
+    {
+      "config": "4-bit+4",
+      "bit_width": 4,
+      "residual_bit_width": 4,
+      "baseline": {
+        "ppl": 12.153974674576595,
+        "kld": 0.001886749267578125
+      },
+      "calibrated": {
+        "ppl": 12.153974674576595,
+        "kld": 0.00191192626953125
+      },
+      "ppl_delta": 0.0,
+      "kld_delta": 2.517700195312487e-05,
+      "calibration_time_s": 16605.539051771164,
+      "n_layers_calibrated": 25,
+      "avg_mse_before": 4.137489479035139e-05,
+      "avg_mse_after": 3.372631152160466e-05,
+      "avg_cos_before": 0.9999990892410279,
+      "avg_cos_after": 0.999999282360077
+    }
+  ]
+}

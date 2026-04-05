@@ -12,6 +12,7 @@ const techniqueLinks = [
   { href: "/techniques/fused-kernels/", label: "Fused Kernels" },
   { href: "/techniques/entropy-codec/", label: "Entropy Coding" },
   { href: "/techniques/norm-compression/", label: "Norm Compression" },
+  { href: "/techniques/blockwise-calibration/", label: "Block-wise Cal" },
   { href: "/techniques/qjl/", label: "QJL" },
   { href: "/techniques/cpu-offload/", label: "CPU Offload" },
 ];

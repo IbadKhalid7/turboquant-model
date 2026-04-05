@@ -53,6 +53,12 @@ from turboquant_model.entropy_codec import (
     compute_entropy,
     measure_compressed_bpw,
 )
+from turboquant_model.norm_calibration import (
+    calibrate_norms,
+    calibrate_norms_blockwise,
+    CalibrationConfig,
+    collect_calibration_data,
+)
 
 __version__ = "0.1.0"
 
@@ -96,4 +102,8 @@ __all__ = [
     "decompress_indices",
     "compute_entropy",
     "measure_compressed_bpw",
+    # Norm calibration
+    "calibrate_norms",
+    "CalibrationConfig",
+    "collect_calibration_data",
 ]
