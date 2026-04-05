@@ -59,6 +59,18 @@ from turboquant_model.norm_calibration import (
     CalibrationConfig,
     collect_calibration_data,
 )
+from turboquant_model.hash_table import (
+    HashTableConfig,
+    HashWeightTable,
+    compute_group_stats,
+    quantize_stats,
+    build_hash_keys,
+    multi_head_lookup,
+    train_hash_table,
+    hash_compress,
+    hash_decompress,
+    compute_bpw,
+)
 
 __version__ = "0.1.0"
 
@@ -106,4 +118,15 @@ __all__ = [
     "calibrate_norms",
     "CalibrationConfig",
     "collect_calibration_data",
+    # Hash table compression
+    "HashTableConfig",
+    "HashWeightTable",
+    "compute_group_stats",
+    "quantize_stats",
+    "build_hash_keys",
+    "multi_head_lookup",
+    "train_hash_table",
+    "hash_compress",
+    "hash_decompress",
+    "compute_bpw",
 ]
